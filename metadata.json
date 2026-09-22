@@ -1,0 +1,6 @@
+{
+  "name": "Hanzi Tutor - Gia Sư Chữ Hán",
+  "description": "Công cụ học và ghi nhớ chữ Hán thông minh cá nhân hóa với thuật toán Lặp lại ngắt quãng (SRS), Notion-like UI và AI Tutor.",
+  "requestFramePermissions": [],
+  "majorCapabilities": ["MAJOR_CAPABILITY_SERVER_SIDE_GEMINI_API"]
+}
