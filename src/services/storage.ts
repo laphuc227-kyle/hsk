@@ -58,6 +58,8 @@ export function getCharacters(): Character[] {
         healed.pinyin === 'chưa rõ' ||
         !healed.meaning ||
         healed.meaning === 'Từ vựng mới' ||
+        healed.meaning.includes('Từ vựng mới') ||
+        healed.meaning.includes('Cần kết nối AI') ||
         healed.meaning === 'Chưa có nghĩa' ||
         healed.hanViet === 'HÁN VIỆT' ||
         healed.hanViet === 'CHƯA RÕ';
@@ -137,12 +139,14 @@ export function addCharacter(character: Character): void {
   const chars = getCharacters();
   const existingIdx = chars.findIndex((c) => c.hanzi === character.hanzi);
   if (existingIdx >= 0) {
-    // Merge lists
+    // Merge lists and update fields while preserving existing SRS progress
     const existing = chars[existingIdx];
     const combinedLists = Array.from(new Set([...existing.listIds, ...character.listIds]));
     chars[existingIdx] = {
       ...existing,
       ...character,
+      id: existing.id,
+      srs: existing.srs || character.srs,
       listIds: combinedLists,
     };
   } else {

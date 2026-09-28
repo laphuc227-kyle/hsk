@@ -28,9 +28,9 @@ function getGenAI() {
   });
 }
 
-// Fallback helper across stable models with timeout
-async function generateWithModelFallback(ai: GoogleGenAI, config: any, timeoutMs = 5000) {
-  const models = ['gemini-2.5-flash', 'gemini-3.8-flash'];
+// Fallback helper across stable models without restrictive short timeout (allows AI to finish generating full details)
+async function generateWithModelFallback(ai: GoogleGenAI, config: any, timeoutMs = 60000) {
+  const models = ['gemini-3.8-flash', 'gemini-2.5-flash'];
   let lastError: any = null;
   for (const model of models) {
     try {
@@ -64,23 +64,35 @@ app.post('/api/gemini/enrich', async (req, res) => {
       return res.status(400).json({ error: 'Missing or invalid characters array.' });
     }
 
+    // 1. Separate characters that already exist in builtInDictionary from those that need AI analysis
+    const builtInResults: Record<string, any> = {};
+    const charsNeedingAI: string[] = [];
+
+    for (const char of characters) {
+      const dictMatch = lookupBuiltIn(char);
+      if (dictMatch) {
+        builtInResults[char] = { ...dictMatch };
+      } else {
+        charsNeedingAI.push(char);
+      }
+    }
+
     // Fast path: if all requested characters are available in built-in dictionary, return immediately!
-    const allInDict = characters.every((c) => !!lookupBuiltIn(c));
-    if (allInDict) {
-      const data = characters.map((c) => ({ ...lookupBuiltIn(c)! }));
+    if (charsNeedingAI.length === 0) {
+      const data = characters.map((c) => ({ ...builtInResults[c] }));
       return res.json({ success: true, data });
     }
 
     const ai = getGenAI();
-    const prompt = `Phân tích và trả về thông tin chi tiết đầy đủ cho các chữ Hán sau đây để người Việt Nam học chữ Hán dễ nhớ nhất:
-Các chữ cần phân tích: ${characters.join(', ')}
+    const prompt = `Phân tích và trả về thông tin chi tiết đầy đủ cho các chữ Hán hoặc từ vựng tiếng Trung sau đây để người Việt Nam học dễ nhớ nhất:
+Các từ/chữ cần phân tích: ${charsNeedingAI.join(', ')}
 
-Trả về định dạng JSON là danh sách đối tượng với cấu trúc chuẩn:
-- hanzi: Chữ Hán
-- pinyin: Phiên âm Pinyin kèm dấu thanh (ví dụ: xué)
-- hanViet: Âm Hán Việt (ví dụ: HỌC)
-- meaning: Nghĩa tiếng Việt ngắn gọn, rõ nghĩa nhất (ví dụ: Học, nghiên cứu)
-- radical: Bộ thủ chính (ví dụ: 子 Tử / 宀 Miên)
+Trả về định dạng JSON là một mảng danh sách đối tượng (Array of objects) với cấu trúc chuẩn:
+- hanzi: Chữ Hán hoặc từ vựng Hán (chính xác từng chữ/từ trong danh sách: ${charsNeedingAI.join(', ')})
+- pinyin: Phiên âm Pinyin kèm dấu thanh (ví dụ: xué hoặc liǎng)
+- hanViet: Âm Hán Việt (ví dụ: HỌC hoặc LƯỠNG)
+- meaning: Nghĩa tiếng Việt ngắn gọn, rõ nghĩa nhất (ví dụ: Học, nghiên cứu hoặc Hai, đôi)
+- radical: Bộ thủ chính (ví dụ: 子 Tử hoặc 一 Nhất)
 - strokeCount: Số nét (số nguyên)
 - components: Các thành phần cấu tạo chữ (ví dụ: ⺌ + 宀 + 子)
 - mnemonic: Mẹo nhớ chữ Hán thông minh, dễ tưởng tượng dựa trên hình tượng/bộ thủ (viết bằng tiếng Việt)
@@ -135,32 +147,49 @@ Trả về định dạng JSON là danh sách đối tượng với cấu trúc 
             },
           },
         },
-      });
+      }, 60000);
 
       const resultText = response.text;
       if (resultText) {
-        const rawData = JSON.parse(resultText);
-        if (Array.isArray(rawData)) {
-          data = rawData;
+        let cleaned = resultText.trim();
+        if (cleaned.startsWith('```')) {
+          cleaned = cleaned.replace(/^```(?:json)?\n?/, '').replace(/\n?```$/, '').trim();
+        }
+        try {
+          const rawData = JSON.parse(cleaned);
+          if (Array.isArray(rawData)) {
+            data = rawData;
+          } else if (rawData && typeof rawData === 'object') {
+            if (Array.isArray(rawData.characters)) {
+              data = rawData.characters;
+            } else if (Array.isArray(rawData.data)) {
+              data = rawData.data;
+            } else if (rawData.hanzi) {
+              data = [rawData];
+            }
+          }
+        } catch (parseErr) {
+          console.warn('JSON parse error from Gemini enrich:', parseErr, resultText);
         }
       }
     } catch (aiError) {
-      console.warn('Gemini API enrich failed or 503, checking built-in dictionary:', aiError);
+      console.warn('Gemini API enrich failed, checking built-in dictionary and fallbacks:', aiError);
     }
 
     // Merge or fill with built-in dictionary for any missing characters
     const finalData = characters.map((char) => {
-      const foundInAi = data.find((d) => d.hanzi === char);
-      const dict = lookupBuiltIn(char);
+      const foundInAi = data.find((d) => d.hanzi?.trim() === char.trim());
+      const dict = builtInResults[char] || lookupBuiltIn(char);
 
       if (foundInAi) {
         return {
           ...foundInAi,
+          hanzi: char,
           pinyin: foundInAi.pinyin || dict?.pinyin || 'chưa rõ',
           hanViet: foundInAi.hanViet || dict?.hanViet || 'CHƯA RÕ',
           meaning: foundInAi.meaning || dict?.meaning || 'Chưa có nghĩa',
           radical: foundInAi.radical || dict?.radical || 'Bộ',
-          strokeCount: foundInAi.strokeCount || dict?.strokeCount || 1,
+          strokeCount: Number(foundInAi.strokeCount) || dict?.strokeCount || 1,
           components: foundInAi.components || dict?.components || '',
           mnemonic: foundInAi.mnemonic || dict?.mnemonic || '',
           examples: (Array.isArray(foundInAi.examples) && foundInAi.examples.length > 0)
@@ -226,7 +255,7 @@ ${contextHanzi ? `Bối cảnh chữ Hán người dùng đang xem: "${contextHa
     let contents: any = prompt;
     if (history && Array.isArray(history) && history.length > 0) {
       // Chat with fallback
-      const models = ['gemini-2.5-flash', 'gemini-3.8-flash'];
+      const models = ['gemini-3.8-flash', 'gemini-2.5-flash'];
       let lastErr: any = null;
       for (const m of models) {
         try {
