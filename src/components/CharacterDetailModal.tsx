@@ -6,7 +6,7 @@ import { StrokeWriterCanvas } from './StrokeWriterCanvas';
 import { speakChinese } from '../services/audio';
 import { addCharacter, removeCharacter } from '../services/storage';
 import { lookupBuiltIn } from '../services/builtInDictionary';
-import { getApiUrl } from '../services/apiClient';
+import { getApiUrl, isStaticHost } from '../services/apiClient';
 
 interface CharacterDetailModalProps {
   character: Character | null;
@@ -103,6 +103,23 @@ export const CharacterDetailModal: React.FC<CharacterDetailModalProps> = ({
 
   const handleGenerateMnemonic = async () => {
     setLoadingMnemonic(true);
+
+    if (isStaticHost()) {
+      const dict = lookupBuiltIn(character.hanzi);
+      const mText = character.mnemonic || dict?.mnemonic;
+      if (mText) {
+        setAiMnemonics([
+          {
+            style: 'Mẹo nhớ ghi nhớ chuẩn',
+            story: mText,
+            breakdown: character.components || dict?.components || character.radical,
+          },
+        ]);
+      }
+      setLoadingMnemonic(false);
+      return;
+    }
+
     try {
       const res = await fetch(getApiUrl('/api/gemini/mnemonic'), {
         method: 'POST',
@@ -120,6 +137,17 @@ export const CharacterDetailModal: React.FC<CharacterDetailModalProps> = ({
       }
     } catch (e) {
       console.error('Error generating AI Mnemonic:', e);
+      const dict = lookupBuiltIn(character.hanzi);
+      const mText = character.mnemonic || dict?.mnemonic;
+      if (mText) {
+        setAiMnemonics([
+          {
+            style: 'Mẹo nhớ ghi nhớ chuẩn',
+            story: mText,
+            breakdown: character.components || dict?.components || character.radical,
+          },
+        ]);
+      }
     } finally {
       setLoadingMnemonic(false);
     }

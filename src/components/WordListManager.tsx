@@ -8,7 +8,7 @@ import { speakChinese } from '../services/audio';
 import { detectCompoundWordsFromCharacters, convertCompoundToCharacter, DetectedCompoundWord } from '../services/compoundWordDetector';
 import { autoCategorizeCharacters } from '../services/hskClassifier';
 import { lookupBuiltIn } from '../services/builtInDictionary';
-import { getApiUrl } from '../services/apiClient';
+import { getApiUrl, isStaticHost } from '../services/apiClient';
 
 interface WordListManagerProps {
   characters: Character[];
@@ -351,8 +351,45 @@ export const WordListManager: React.FC<WordListManagerProps> = ({
 
     setAddStatusMessage(`Đã tìm thấy ${extractedHanzi.length} chữ. Đang bổ sung thông tin chi tiết...`);
 
+    // Fast-path: Check how many characters exist in builtInDictionary
+    const missingInBuiltIn = extractedHanzi.filter((h) => !lookupBuiltIn(h));
+
+    // If all characters exist in built-in dictionary OR running on static host (e.g. GitHub Pages)
+    if (missingInBuiltIn.length === 0 || isStaticHost()) {
+      extractedHanzi.forEach((h) => {
+        const dict = lookupBuiltIn(h);
+        const newChar: Character = {
+          id: `c_${Date.now()}_${Math.random().toString(36).substring(2, 6)}`,
+          hanzi: h,
+          pinyin: dict?.pinyin || 'chưa có phiên âm',
+          hanViet: dict?.hanViet || 'CHƯA RÕ',
+          meaning: dict?.meaning || 'Từ vựng tiếng Trung',
+          radical: dict?.radical || 'Bộ',
+          strokeCount: dict?.strokeCount || 1,
+          components: dict?.components || '',
+          mnemonic: dict?.mnemonic || '',
+          examples: dict?.examples || [],
+          compoundWords: dict?.compoundWords || [],
+          listIds: [targetListIdForAdd],
+          createdAt: Date.now(),
+          srs: { ...DEFAULT_SRS },
+        };
+        addCharacter(newChar);
+      });
+
+      setAddStatusMessage(`Thành công! Đã thêm ${extractedHanzi.length} chữ vào danh sách.`);
+      setTimeout(() => {
+        setShowAddWordModal(false);
+        setBatchInputText('');
+        setAddStatusMessage('');
+        onRefreshData();
+      }, 700);
+      setIsProcessingAdd(false);
+      return;
+    }
+
     try {
-      // Call AI Enrich endpoint (with fast built-in path & server fallback)
+      // Call AI Enrich endpoint when running on server with Gemini API
       const res = await fetch(getApiUrl('/api/gemini/enrich'), {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },

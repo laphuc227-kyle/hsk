@@ -1,7 +1,8 @@
 import React, { useState } from 'react';
 import { motion } from 'motion/react';
 import { Sparkles, Send, X, Bot, User, Loader2, BookOpen, HelpCircle } from 'lucide-react';
-import { getApiUrl } from '../services/apiClient';
+import { getApiUrl, isStaticHost } from '../services/apiClient';
+import { lookupBuiltIn } from '../services/builtInDictionary';
 
 interface AITutorDrawerProps {
   isOpen: boolean;
@@ -42,6 +43,27 @@ export const AITutorDrawer: React.FC<AITutorDrawerProps> = ({
     setInput('');
     setLoading(true);
 
+    if (isStaticHost()) {
+      if (contextHanzi) {
+        const dict = lookupBuiltIn(contextHanzi);
+        if (dict) {
+          const offlineAnswer = `**Chi tiết chữ ${dict.hanzi}** (${dict.pinyin} - [${dict.hanViet}])\n\n• **Nghĩa:** ${dict.meaning}\n• **Bộ thủ:** ${dict.radical}\n• **Số nét:** ${dict.strokeCount}\n• **Cấu tạo:** ${dict.components || 'Chiết tự chuẩn'}\n• **Mẹo nhớ:** ${dict.mnemonic || 'Xem chi tiết bộ thủ'}\n\n*(Ghi chú: Trên GitHub Pages máy chủ tĩnh, hệ thống tra cứu nhanh từ từ điển tích hợp. Để trò chuyện mở rộng với Gia Sư AI, hãy mở ứng dụng trên AI Studio!)*`;
+          setMessages([...updatedMessages, { role: 'model', content: offlineAnswer }]);
+          setLoading(false);
+          return;
+        }
+      }
+      setMessages([
+        ...updatedMessages,
+        {
+          role: 'model',
+          content: '⚡ Bạn đang mở ứng dụng từ GitHub Pages (máy chủ tĩnh). Tính năng đàm thoại tự do với Gia Sư AI Gemini cần máy chủ bảo mật API Key nên khả dụng khi chạy trên môi trường Google AI Studio. Trên GitHub Pages, bạn vẫn có thể sử dụng đầy đủ toàn bộ tính năng tra cứu từ điển, thẻ Flashcard SRS, luyện viết chữ Hán, phát âm và đồng bộ Firebase bình thường!',
+        },
+      ]);
+      setLoading(false);
+      return;
+    }
+
     try {
       const res = await fetch(getApiUrl('/api/gemini/tutor'), {
         method: 'POST',
@@ -65,7 +87,7 @@ export const AITutorDrawer: React.FC<AITutorDrawerProps> = ({
     } catch (e) {
       setMessages([
         ...updatedMessages,
-        { role: 'model', content: 'Lỗi mạng hoặc server không phản hồi.' },
+        { role: 'model', content: 'Lỗi mạng hoặc server không phản hồi. Vui lòng kiểm tra lại kết nối mạng.' },
       ]);
     } finally {
       setLoading(false);

@@ -3,12 +3,12 @@ import path from 'path';
 import dotenv from 'dotenv';
 import { createServer as createViteServer } from 'vite';
 import { GoogleGenAI, Type } from '@google/genai';
-import { lookupBuiltIn, BUILT_IN_DICTIONARY } from './src/services/builtInDictionary';
+import { lookupBuiltIn, BUILT_IN_DICTIONARY } from './src/services/builtInDictionary.ts';
 
 dotenv.config();
 
 const app = express();
-const PORT = 3000;
+const PORT = Number(process.env.PORT) || 3000;
 
 app.use(express.json({ limit: '10mb' }));
 
