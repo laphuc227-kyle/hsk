@@ -1,6 +1,7 @@
 import React, { useState } from 'react';
 import { motion } from 'motion/react';
 import { Sparkles, Send, X, Bot, User, Loader2, BookOpen, HelpCircle } from 'lucide-react';
+import { getApiUrl } from '../services/apiClient';
 
 interface AITutorDrawerProps {
   isOpen: boolean;
@@ -42,7 +43,7 @@ export const AITutorDrawer: React.FC<AITutorDrawerProps> = ({
     setLoading(true);
 
     try {
-      const res = await fetch('/api/gemini/tutor', {
+      const res = await fetch(getApiUrl('/api/gemini/tutor'), {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({

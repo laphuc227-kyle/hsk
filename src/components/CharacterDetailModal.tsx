@@ -6,6 +6,7 @@ import { StrokeWriterCanvas } from './StrokeWriterCanvas';
 import { speakChinese } from '../services/audio';
 import { addCharacter, removeCharacter } from '../services/storage';
 import { lookupBuiltIn } from '../services/builtInDictionary';
+import { getApiUrl } from '../services/apiClient';
 
 interface CharacterDetailModalProps {
   character: Character | null;
@@ -50,7 +51,7 @@ export const CharacterDetailModal: React.FC<CharacterDetailModalProps> = ({
       const dict = lookupBuiltIn(character.hanzi);
       let enriched: any = dict;
       if (!enriched) {
-        const res = await fetch('/api/gemini/enrich', {
+        const res = await fetch(getApiUrl('/api/gemini/enrich'), {
           method: 'POST',
           headers: { 'Content-Type': 'application/json' },
           body: JSON.stringify({ characters: [character.hanzi] }),
@@ -103,7 +104,7 @@ export const CharacterDetailModal: React.FC<CharacterDetailModalProps> = ({
   const handleGenerateMnemonic = async () => {
     setLoadingMnemonic(true);
     try {
-      const res = await fetch('/api/gemini/mnemonic', {
+      const res = await fetch(getApiUrl('/api/gemini/mnemonic'), {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({

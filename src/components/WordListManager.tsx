@@ -8,6 +8,7 @@ import { speakChinese } from '../services/audio';
 import { detectCompoundWordsFromCharacters, convertCompoundToCharacter, DetectedCompoundWord } from '../services/compoundWordDetector';
 import { autoCategorizeCharacters } from '../services/hskClassifier';
 import { lookupBuiltIn } from '../services/builtInDictionary';
+import { getApiUrl } from '../services/apiClient';
 
 interface WordListManagerProps {
   characters: Character[];
@@ -36,11 +37,35 @@ export const WordListManager: React.FC<WordListManagerProps> = ({
   const [newListName, setNewListName] = useState('');
   const [newListDesc, setNewListDesc] = useState('');
 
-  // New Word Batch Input State
+  // New Word Batch & Manual Input State
+  const [addMode, setAddMode] = useState<'ai' | 'manual'>('ai');
   const [batchInputText, setBatchInputText] = useState('');
   const [targetListIdForAdd, setTargetListIdForAdd] = useState<string>(selectedListId || 'hsk1');
   const [isProcessingAdd, setIsProcessingAdd] = useState(false);
   const [addStatusMessage, setAddStatusMessage] = useState('');
+
+  // Manual Add Form State
+  const [manualHanzi, setManualHanzi] = useState('');
+  const [manualPinyin, setManualPinyin] = useState('');
+  const [manualHanViet, setManualHanViet] = useState('');
+  const [manualMeaning, setManualMeaning] = useState('');
+  const [manualRadical, setManualRadical] = useState('');
+  const [manualMnemonic, setManualMnemonic] = useState('');
+
+  const handleManualHanziChange = (val: string) => {
+    setManualHanzi(val);
+    const trimmed = val.trim();
+    if (trimmed) {
+      const match = lookupBuiltIn(trimmed);
+      if (match) {
+        setManualPinyin(match.pinyin || '');
+        setManualHanViet(match.hanViet || '');
+        setManualMeaning(match.meaning || '');
+        setManualRadical(match.radical || '');
+        if (match.mnemonic) setManualMnemonic(match.mnemonic);
+      }
+    }
+  };
 
   // Export Modal State
   const [showExportModal, setShowExportModal] = useState(false);
@@ -328,7 +353,7 @@ export const WordListManager: React.FC<WordListManagerProps> = ({
 
     try {
       // Call AI Enrich endpoint (with fast built-in path & server fallback)
-      const res = await fetch('/api/gemini/enrich', {
+      const res = await fetch(getApiUrl('/api/gemini/enrich'), {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({ characters: extractedHanzi }),
@@ -401,6 +426,46 @@ export const WordListManager: React.FC<WordListManagerProps> = ({
     } finally {
       setIsProcessingAdd(false);
     }
+  };
+
+  const handleManualAddCharacter = () => {
+    const hanziTrimmed = manualHanzi.trim();
+    if (!hanziTrimmed) return;
+
+    setIsProcessingAdd(true);
+    setAddStatusMessage(`Đang thêm từ "${hanziTrimmed}"...`);
+
+    const newChar: Character = {
+      id: `c_${Date.now()}_${Math.random().toString(36).substring(2, 6)}`,
+      hanzi: hanziTrimmed,
+      pinyin: manualPinyin.trim() || 'chưa có phiên âm',
+      hanViet: manualHanViet.trim() || 'CHƯA RÕ',
+      meaning: manualMeaning.trim() || 'Từ vựng tiếng Trung',
+      radical: manualRadical.trim() || 'Bộ',
+      strokeCount: hanziTrimmed.length === 1 ? 1 : hanziTrimmed.length,
+      mnemonic: manualMnemonic.trim() || undefined,
+      examples: [],
+      compoundWords: [],
+      listIds: [targetListIdForAdd],
+      createdAt: Date.now(),
+      srs: { ...DEFAULT_SRS },
+    };
+
+    addCharacter(newChar);
+
+    setAddStatusMessage(`Thành công! Đã thêm từ "${hanziTrimmed}" vào danh sách.`);
+    setTimeout(() => {
+      setShowAddWordModal(false);
+      setManualHanzi('');
+      setManualPinyin('');
+      setManualHanViet('');
+      setManualMeaning('');
+      setManualRadical('');
+      setManualMnemonic('');
+      setAddStatusMessage('');
+      setIsProcessingAdd(false);
+      onRefreshData();
+    }, 600);
   };
 
   const [deletingChar, setDeletingChar] = useState<Character | null>(null);
@@ -1007,20 +1072,48 @@ export const WordListManager: React.FC<WordListManagerProps> = ({
         </div>
       )}
 
-      {/* Modal: Batch Add Words */}
+      {/* Modal: Batch / Manual Add Words */}
       {showAddWordModal && (
         <div className="fixed inset-0 z-50 flex items-center justify-center p-4 bg-slate-950/70 backdrop-blur-sm">
           <div className="bg-slate-900 w-full max-w-lg rounded-2xl shadow-2xl border border-slate-800 p-6 space-y-4">
             <div className="flex items-center justify-between">
               <h3 className="text-base font-bold text-slate-100 flex items-center gap-2">
                 <Sparkles className="w-5 h-5 text-emerald-400" />
-                Thêm chữ Hán mới (Nhập đơn hoặc Hàng loạt)
+                Thêm chữ Hán & từ vựng mới
               </h3>
               <button
                 onClick={() => setShowAddWordModal(false)}
                 className="text-slate-500 hover:text-slate-300 text-xs font-mono cursor-pointer"
               >
                 [Đóng]
+              </button>
+            </div>
+
+            {/* Mode Tabs */}
+            <div className="grid grid-cols-2 p-1 bg-slate-950 rounded-xl border border-slate-800">
+              <button
+                type="button"
+                onClick={() => setAddMode('ai')}
+                className={`py-2 px-3 text-xs font-semibold rounded-lg transition cursor-pointer flex items-center justify-center gap-1.5 ${
+                  addMode === 'ai'
+                    ? 'bg-emerald-500/20 text-emerald-300 border border-emerald-500/40 shadow-xs'
+                    : 'text-slate-400 hover:text-slate-200'
+                }`}
+              >
+                <Sparkles className="w-3.5 h-3.5" />
+                <span>AI Tự động tra cứu</span>
+              </button>
+              <button
+                type="button"
+                onClick={() => setAddMode('manual')}
+                className={`py-2 px-3 text-xs font-semibold rounded-lg transition cursor-pointer flex items-center justify-center gap-1.5 ${
+                  addMode === 'manual'
+                    ? 'bg-cyan-500/20 text-cyan-300 border border-cyan-500/40 shadow-xs'
+                    : 'text-slate-400 hover:text-slate-200'
+                }`}
+              >
+                <Edit className="w-3.5 h-3.5" />
+                <span>Tự nhập thủ công</span>
               </button>
             </div>
 
@@ -1040,21 +1133,82 @@ export const WordListManager: React.FC<WordListManagerProps> = ({
                 </select>
               </div>
 
-              <div>
-                <label className="block text-slate-300 font-medium mb-1">
-                  Nhập hoặc Dán các chữ Hán muốn học:
-                </label>
-                <textarea
-                  value={batchInputText}
-                  onChange={(e) => setBatchInputText(e.target.value)}
-                  placeholder="Dán chữ Hán tùy ý vào đây, ví dụ:&#10;学 喜欢 电脑 老师 工作..."
-                  rows={4}
-                  className="w-full p-3 bg-slate-950 text-slate-100 border border-slate-800 rounded-xl font-serif text-lg focus:outline-hidden focus:border-cyan-500"
-                />
-                <p className="text-[11px] text-slate-400 pt-1">
-                  💡 AI sẽ tự động tra cứu Pinyin, Hán Việt, Bộ thủ, Nghĩa Việt, Mẹo nhớ và Ví dụ cho từng chữ.
-                </p>
-              </div>
+              {addMode === 'ai' ? (
+                <div>
+                  <label className="block text-slate-300 font-medium mb-1">
+                    Nhập hoặc Dán các chữ Hán muốn học:
+                  </label>
+                  <textarea
+                    value={batchInputText}
+                    onChange={(e) => setBatchInputText(e.target.value)}
+                    placeholder="Dán chữ Hán tùy ý vào đây, ví dụ:&#10;学 喜欢 电脑 老师 工作..."
+                    rows={4}
+                    className="w-full p-3 bg-slate-950 text-slate-100 border border-slate-800 rounded-xl font-serif text-lg focus:outline-hidden focus:border-cyan-500"
+                  />
+                  <p className="text-[11px] text-slate-400 pt-1">
+                    💡 AI sẽ tự động phân tích Pinyin, Âm Hán Việt, Bộ thủ, Nghĩa Việt, Mẹo nhớ và Ví dụ cho từng chữ (hoạt động mượt mà trên cả GitHub Pages và App).
+                  </p>
+                </div>
+              ) : (
+                <div className="space-y-2.5 bg-slate-950/60 p-3.5 rounded-xl border border-slate-800/80">
+                  <div className="grid grid-cols-2 gap-2">
+                    <div>
+                      <label className="block text-slate-300 font-medium mb-1">Chữ Hán / Từ vựng *</label>
+                      <input
+                        type="text"
+                        value={manualHanzi}
+                        onChange={(e) => handleManualHanziChange(e.target.value)}
+                        placeholder="Ví dụ: 电脑 hoặc 猫"
+                        className="w-full p-2.5 bg-slate-950 text-slate-100 font-serif text-base border border-slate-800 rounded-xl focus:outline-hidden focus:border-cyan-500"
+                      />
+                    </div>
+                    <div>
+                      <label className="block text-slate-300 font-medium mb-1">Phiên âm Pinyin</label>
+                      <input
+                        type="text"
+                        value={manualPinyin}
+                        onChange={(e) => setManualPinyin(e.target.value)}
+                        placeholder="Ví dụ: diàn nǎo"
+                        className="w-full p-2.5 bg-slate-950 text-slate-100 font-mono text-xs border border-slate-800 rounded-xl focus:outline-hidden focus:border-cyan-500"
+                      />
+                    </div>
+                  </div>
+
+                  <div className="grid grid-cols-2 gap-2">
+                    <div>
+                      <label className="block text-slate-300 font-medium mb-1">Âm Hán Việt</label>
+                      <input
+                        type="text"
+                        value={manualHanViet}
+                        onChange={(e) => setManualHanViet(e.target.value)}
+                        placeholder="Ví dụ: ĐIỆN NÃO"
+                        className="w-full p-2.5 bg-slate-950 text-slate-100 text-xs border border-slate-800 rounded-xl focus:outline-hidden focus:border-cyan-500"
+                      />
+                    </div>
+                    <div>
+                      <label className="block text-slate-300 font-medium mb-1">Nghĩa tiếng Việt *</label>
+                      <input
+                        type="text"
+                        value={manualMeaning}
+                        onChange={(e) => setManualMeaning(e.target.value)}
+                        placeholder="Ví dụ: Máy vi tính"
+                        className="w-full p-2.5 bg-slate-950 text-slate-100 text-xs border border-slate-800 rounded-xl focus:outline-hidden focus:border-cyan-500"
+                      />
+                    </div>
+                  </div>
+
+                  <div>
+                    <label className="block text-slate-300 font-medium mb-1">Mẹo ghi nhớ (Tùy chọn)</label>
+                    <input
+                      type="text"
+                      value={manualMnemonic}
+                      onChange={(e) => setManualMnemonic(e.target.value)}
+                      placeholder="Mẹo nhớ vui nhộn hoặc hình tượng..."
+                      className="w-full p-2.5 bg-slate-950 text-slate-100 text-xs border border-slate-800 rounded-xl focus:outline-hidden focus:border-cyan-500"
+                    />
+                  </div>
+                </div>
+              )}
 
               {addStatusMessage && (
                 <div className="p-3 bg-slate-950/80 rounded-xl border border-slate-800 text-xs text-slate-200 flex items-center gap-2">
@@ -1070,29 +1224,53 @@ export const WordListManager: React.FC<WordListManagerProps> = ({
 
             <div className="flex items-center justify-end gap-2 pt-2">
               <button
+                type="button"
                 onClick={() => setShowAddWordModal(false)}
                 disabled={isProcessingAdd}
-                className="px-3 py-1.5 text-xs text-slate-400 hover:bg-slate-800 rounded-xl"
+                className="px-3.5 py-2 text-xs text-slate-400 hover:bg-slate-800 rounded-xl cursor-pointer"
               >
                 Hủy
               </button>
-              <button
-                onClick={handleBatchAddCharacters}
-                disabled={isProcessingAdd || !batchInputText.trim()}
-                className="px-4 py-2 text-xs font-bold text-slate-950 bg-gradient-to-r from-emerald-400 to-teal-300 hover:from-emerald-300 hover:to-teal-200 rounded-xl disabled:opacity-50 flex items-center gap-1.5 cursor-pointer shadow-md shadow-emerald-500/20"
-              >
-                {isProcessingAdd ? (
-                  <>
-                    <Loader2 className="w-3.5 h-3.5 animate-spin" />
-                    <span>Đang tự động bổ sung AI...</span>
-                  </>
-                ) : (
-                  <>
-                    <Sparkles className="w-3.5 h-3.5 text-slate-950" />
-                    <span>Lưu & Tự bổ sung AI</span>
-                  </>
-                )}
-              </button>
+
+              {addMode === 'ai' ? (
+                <button
+                  type="button"
+                  onClick={handleBatchAddCharacters}
+                  disabled={isProcessingAdd || !batchInputText.trim()}
+                  className="px-4 py-2 text-xs font-bold text-slate-950 bg-gradient-to-r from-emerald-400 to-teal-300 hover:from-emerald-300 hover:to-teal-200 rounded-xl disabled:opacity-50 flex items-center gap-1.5 cursor-pointer shadow-md shadow-emerald-500/20"
+                >
+                  {isProcessingAdd ? (
+                    <>
+                      <Loader2 className="w-3.5 h-3.5 animate-spin" />
+                      <span>Đang tự động phân tích AI...</span>
+                    </>
+                  ) : (
+                    <>
+                      <Sparkles className="w-3.5 h-3.5 text-slate-950" />
+                      <span>Lưu & Tự bổ sung AI</span>
+                    </>
+                  )}
+                </button>
+              ) : (
+                <button
+                  type="button"
+                  onClick={handleManualAddCharacter}
+                  disabled={isProcessingAdd || !manualHanzi.trim() || !manualMeaning.trim()}
+                  className="px-4 py-2 text-xs font-bold text-slate-950 bg-gradient-to-r from-cyan-400 to-teal-300 hover:from-cyan-300 hover:to-teal-200 rounded-xl disabled:opacity-50 flex items-center gap-1.5 cursor-pointer shadow-md shadow-cyan-500/20"
+                >
+                  {isProcessingAdd ? (
+                    <>
+                      <Loader2 className="w-3.5 h-3.5 animate-spin" />
+                      <span>Đang lưu...</span>
+                    </>
+                  ) : (
+                    <>
+                      <Check className="w-3.5 h-3.5 text-slate-950" />
+                      <span>Lưu từ vựng này</span>
+                    </>
+                  )}
+                </button>
+              )}
             </div>
           </div>
         </div>

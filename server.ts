@@ -12,6 +12,17 @@ const PORT = 3000;
 
 app.use(express.json({ limit: '10mb' }));
 
+// Enable CORS for external static frontends (e.g. GitHub Pages)
+app.use((req, res, next) => {
+  res.header('Access-Control-Allow-Origin', '*');
+  res.header('Access-Control-Allow-Headers', 'Origin, X-Requested-With, Content-Type, Accept, Authorization');
+  res.header('Access-Control-Allow-Methods', 'GET, POST, PUT, DELETE, OPTIONS');
+  if (req.method === 'OPTIONS') {
+    return res.sendStatus(200);
+  }
+  next();
+});
+
 // Lazy getter for GoogleGenAI to ensure GEMINI_API_KEY is retrieved dynamically
 function getGenAI() {
   const apiKey = process.env.GEMINI_API_KEY;

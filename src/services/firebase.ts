@@ -16,7 +16,6 @@ import {
   setDoc,
   deleteDoc,
   writeBatch,
-  getDocFromServer,
 } from 'firebase/firestore';
 import firebaseConfig from '../../firebase-applet-config.json';
 import { Character, WordList, UserStats } from '../types';
@@ -37,9 +36,20 @@ export enum OperationType {
   WRITE = 'write',
 }
 
+// Utility to safely sanitize objects for Firestore (removes undefined values which cause Firestore to fail)
+export function sanitizeForFirestore<T>(data: T): T {
+  return JSON.parse(
+    JSON.stringify(data, (_, value) => (value === undefined ? null : value))
+  );
+}
+
 export function handleFirestoreError(error: unknown, operationType: OperationType, path: string | null) {
+  const rawCode = (error as any)?.code || '';
+  const rawMessage = error instanceof Error ? error.message : String(error);
+  
   const errInfo = {
-    error: error instanceof Error ? error.message : String(error),
+    error: rawMessage,
+    code: rawCode,
     authInfo: {
       userId: auth.currentUser?.uid,
       email: auth.currentUser?.email,
@@ -49,23 +59,14 @@ export function handleFirestoreError(error: unknown, operationType: OperationTyp
     operationType,
     path,
   };
+  
   console.error('Firestore Error:', JSON.stringify(errInfo));
-  throw new Error(JSON.stringify(errInfo));
-}
-
-// Test initial connection as required by Firebase skill
-export async function testConnection(): Promise<boolean> {
-  try {
-    await getDocFromServer(doc(db, 'test', 'connection'));
-    return true;
-  } catch (error) {
-    if (error instanceof Error && error.message.includes('the client is offline')) {
-      console.warn('Firebase client is currently offline.');
-      return false;
-    }
-    // Permissions error on /test/connection is normal since default rule is deny
-    return true;
-  }
+  const customError: any = new Error(rawMessage);
+  customError.code = rawCode;
+  customError.info = errInfo;
+  customError.operationType = operationType;
+  customError.path = path;
+  throw customError;
 }
 
 // Google Authentication
@@ -131,7 +132,8 @@ export async function saveCharacterToCloud(userId: string, character: Character)
   const path = `users/${userId}/characters/${character.id}`;
   try {
     const docRef = doc(db, 'users', userId, 'characters', character.id);
-    await setDoc(docRef, { ...character, userId, updatedAt: Date.now() }, { merge: true });
+    const cleanData = sanitizeForFirestore({ ...character, userId, updatedAt: Date.now() });
+    await setDoc(docRef, cleanData, { merge: true });
   } catch (err) {
     handleFirestoreError(err, OperationType.WRITE, path);
   }
@@ -151,19 +153,25 @@ export async function deleteCharacterFromCloud(userId: string, characterId: stri
 }
 
 /**
- * Saves a batch of characters to Cloud Firestore (max 450 per batch)
+ * Saves a batch of characters to Cloud Firestore (max 400 per batch)
  */
 export async function saveCharactersBatchToCloud(userId: string, characters: Character[]): Promise<void> {
   if (characters.length === 0) return;
+  const path = `users/${userId}/characters`;
   const chunkSize = 400;
-  for (let i = 0; i < characters.length; i += chunkSize) {
-    const chunk = characters.slice(i, i + chunkSize);
-    const batch = writeBatch(db);
-    chunk.forEach((c) => {
-      const docRef = doc(db, 'users', userId, 'characters', c.id);
-      batch.set(docRef, { ...c, userId, updatedAt: Date.now() }, { merge: true });
-    });
-    await batch.commit();
+  try {
+    for (let i = 0; i < characters.length; i += chunkSize) {
+      const chunk = characters.slice(i, i + chunkSize);
+      const batch = writeBatch(db);
+      chunk.forEach((c) => {
+        const docRef = doc(db, 'users', userId, 'characters', c.id);
+        const cleanChar = sanitizeForFirestore({ ...c, userId, updatedAt: Date.now() });
+        batch.set(docRef, cleanChar, { merge: true });
+      });
+      await batch.commit();
+    }
+  } catch (err) {
+    handleFirestoreError(err, OperationType.WRITE, path);
   }
 }
 
@@ -191,12 +199,18 @@ export async function loadWordListsFromCloud(userId: string): Promise<WordList[]
  */
 export async function saveWordListsToCloud(userId: string, wordLists: WordList[]): Promise<void> {
   if (wordLists.length === 0) return;
-  const batch = writeBatch(db);
-  wordLists.forEach((list) => {
-    const docRef = doc(db, 'users', userId, 'wordLists', list.id);
-    batch.set(docRef, { ...list, userId, updatedAt: Date.now() }, { merge: true });
-  });
-  await batch.commit();
+  const path = `users/${userId}/wordLists`;
+  try {
+    const batch = writeBatch(db);
+    wordLists.forEach((list) => {
+      const docRef = doc(db, 'users', userId, 'wordLists', list.id);
+      const cleanList = sanitizeForFirestore({ ...list, userId, updatedAt: Date.now() });
+      batch.set(docRef, cleanList, { merge: true });
+    });
+    await batch.commit();
+  } catch (err) {
+    handleFirestoreError(err, OperationType.WRITE, path);
+  }
 }
 
 /**
@@ -224,7 +238,8 @@ export async function saveUserStatsToCloud(userId: string, stats: UserStats): Pr
   const path = `users/${userId}/stats/main`;
   try {
     const docRef = doc(db, 'users', userId, 'stats', 'main');
-    await setDoc(docRef, { ...stats, userId, updatedAt: Date.now() }, { merge: true });
+    const cleanStats = sanitizeForFirestore({ ...stats, userId, updatedAt: Date.now() });
+    await setDoc(docRef, cleanStats, { merge: true });
   } catch (err) {
     handleFirestoreError(err, OperationType.WRITE, path);
   }

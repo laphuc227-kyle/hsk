@@ -52,7 +52,6 @@ import {
   saveWordListsToCloud,
   loadUserStatsFromCloud,
   saveUserStatsToCloud,
-  testConnection,
 } from './services/firebase';
 
 export default function App() {
@@ -102,9 +101,6 @@ export default function App() {
     setCharacters(categorized);
     setWordLists(getWordLists());
     setStats(getUserStats());
-
-    // Test Firestore connection on boot
-    testConnection().catch(console.warn);
 
     // Subscribe to Firebase Auth
     const unsubscribe = subscribeToAuth((user) => {
@@ -191,12 +187,12 @@ export default function App() {
     } catch (err: any) {
       console.error('Cloud Sync failed:', err);
       setSyncToast({
-        message: 'Đồng bộ đám mây thất bại. Hãy kiểm tra kết nối mạng.',
+        message: 'Đồng bộ đám mây thất bại. Vui lòng kiểm tra lại mạng!',
         type: 'error',
       });
     } finally {
       setIsSyncing(false);
-      setTimeout(() => setSyncToast(null), 3500);
+      setTimeout(() => setSyncToast(null), 4000);
     }
   };
 
