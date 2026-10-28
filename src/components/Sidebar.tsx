@@ -1,4 +1,5 @@
 import React from 'react';
+import { motion, AnimatePresence } from 'motion/react';
 import {
   Sparkles,
   Zap,
@@ -6,15 +7,14 @@ import {
   Target,
   BarChart3,
   BookOpen,
-  Plus,
   Settings,
   Bot,
   GraduationCap,
   Layers,
-  ChevronRight,
   BookOpenCheck,
   Combine,
   FileQuestion,
+  X,
 } from 'lucide-react';
 import { WordList, StudySessionMode } from '../types';
 
@@ -29,6 +29,8 @@ interface SidebarProps {
   onOpenGrammar: () => void;
   onOpenSettings: () => void;
   onSelectList: (listId: string | null) => void;
+  isOpenOnMobile?: boolean;
+  onCloseMobile?: () => void;
 }
 
 export const Sidebar: React.FC<SidebarProps> = ({
@@ -42,9 +44,18 @@ export const Sidebar: React.FC<SidebarProps> = ({
   onOpenGrammar,
   onOpenSettings,
   onSelectList,
+  isOpenOnMobile = false,
+  onCloseMobile,
 }) => {
-  return (
-    <aside className="w-64 bg-slate-900/90 backdrop-blur-xl border-r border-slate-800/80 h-screen flex flex-col justify-between select-none shrink-0 text-slate-200 z-20">
+  const handleAction = (action: () => void) => {
+    action();
+    if (onCloseMobile) {
+      onCloseMobile();
+    }
+  };
+
+  const renderContent = (isMobile: boolean = false) => (
+    <div className="flex flex-col h-full justify-between select-none text-slate-200">
       {/* Top Header Logo */}
       <div className="p-4 border-b border-slate-800/80 flex items-center justify-between">
         <div className="flex items-center gap-3">
@@ -58,6 +69,16 @@ export const Sidebar: React.FC<SidebarProps> = ({
             <span className="text-[10px] text-cyan-400/80 font-mono font-medium">Gia Sư Chữ Hán AI</span>
           </div>
         </div>
+
+        {isMobile && (
+          <button
+            onClick={onCloseMobile}
+            className="p-1.5 rounded-lg text-slate-400 hover:text-slate-200 hover:bg-slate-800 transition cursor-pointer"
+            aria-label="Đóng menu"
+          >
+            <X className="w-5 h-5" />
+          </button>
+        )}
       </div>
 
       {/* Navigation Links */}
@@ -69,7 +90,7 @@ export const Sidebar: React.FC<SidebarProps> = ({
           </p>
 
           <button
-            onClick={() => onStartSession('smart_daily', selectedListId || undefined)}
+            onClick={() => handleAction(() => onStartSession('smart_daily', selectedListId || undefined))}
             className="w-full flex items-center justify-between px-2.5 py-2 rounded-xl text-xs font-semibold text-slate-200 hover:text-emerald-300 hover:bg-emerald-500/10 border border-transparent hover:border-emerald-500/20 transition group cursor-pointer"
           >
             <div className="flex items-center gap-2.5">
@@ -84,7 +105,7 @@ export const Sidebar: React.FC<SidebarProps> = ({
           </button>
 
           <button
-            onClick={() => onStartSession('quick_flashcard', selectedListId || undefined)}
+            onClick={() => handleAction(() => onStartSession('quick_flashcard', selectedListId || undefined))}
             className="w-full flex items-center gap-2.5 px-2.5 py-2 rounded-xl text-xs font-medium text-slate-300 hover:text-cyan-300 hover:bg-cyan-500/10 border border-transparent hover:border-cyan-500/20 transition cursor-pointer group"
           >
             <Zap className="w-4 h-4 text-cyan-400 group-hover:scale-110 transition" />
@@ -92,7 +113,7 @@ export const Sidebar: React.FC<SidebarProps> = ({
           </button>
 
           <button
-            onClick={() => onStartSession('weakness', selectedListId || undefined)}
+            onClick={() => handleAction(() => onStartSession('weakness', selectedListId || undefined))}
             className="w-full flex items-center gap-2.5 px-2.5 py-2 rounded-xl text-xs font-medium text-slate-300 hover:text-amber-300 hover:bg-amber-500/10 border border-transparent hover:border-amber-500/20 transition cursor-pointer group"
           >
             <Flame className="w-4 h-4 text-amber-400 group-hover:scale-110 transition" />
@@ -100,7 +121,7 @@ export const Sidebar: React.FC<SidebarProps> = ({
           </button>
 
           <button
-            onClick={() => onStartSession('random_test', selectedListId || undefined)}
+            onClick={() => handleAction(() => onStartSession('random_test', selectedListId || undefined))}
             className="w-full flex items-center gap-2.5 px-2.5 py-2 rounded-xl text-xs font-medium text-slate-300 hover:text-teal-300 hover:bg-teal-500/10 border border-transparent hover:border-teal-500/20 transition cursor-pointer group"
           >
             <Target className="w-4 h-4 text-teal-400 group-hover:scale-110 transition" />
@@ -108,7 +129,7 @@ export const Sidebar: React.FC<SidebarProps> = ({
           </button>
 
           <button
-            onClick={() => onStartSession('sentence_cloze', selectedListId || undefined)}
+            onClick={() => handleAction(() => onStartSession('sentence_cloze', selectedListId || undefined))}
             className="w-full flex items-center justify-between px-2.5 py-2 rounded-xl text-xs font-medium text-slate-300 hover:text-violet-300 hover:bg-violet-500/10 border border-transparent hover:border-violet-500/20 transition cursor-pointer group"
           >
             <div className="flex items-center gap-2.5">
@@ -128,7 +149,7 @@ export const Sidebar: React.FC<SidebarProps> = ({
           </p>
 
           <button
-            onClick={onOpenGrammar}
+            onClick={() => handleAction(onOpenGrammar)}
             className={`w-full flex items-center justify-between px-2.5 py-2 rounded-xl text-xs font-semibold transition cursor-pointer ${
               activeView === 'grammar'
                 ? 'bg-gradient-to-r from-emerald-500/20 to-teal-500/20 text-emerald-300 border border-emerald-500/30 shadow-xs'
@@ -145,7 +166,7 @@ export const Sidebar: React.FC<SidebarProps> = ({
           </button>
 
           <button
-            onClick={onOpenTutor}
+            onClick={() => handleAction(onOpenTutor)}
             className="w-full flex items-center gap-2.5 px-2.5 py-2 rounded-xl text-xs font-semibold text-cyan-200 bg-gradient-to-r from-cyan-950/60 to-slate-900 hover:from-cyan-900/80 hover:to-slate-800 border border-cyan-500/30 transition cursor-pointer shadow-xs group"
           >
             <Bot className="w-4 h-4 text-cyan-400 group-hover:rotate-12 transition" />
@@ -153,7 +174,7 @@ export const Sidebar: React.FC<SidebarProps> = ({
           </button>
 
           <button
-            onClick={onOpenAnalytics}
+            onClick={() => handleAction(onOpenAnalytics)}
             className={`w-full flex items-center gap-2.5 px-2.5 py-2 rounded-xl text-xs font-medium transition cursor-pointer ${
               activeView === 'analytics'
                 ? 'bg-slate-800 text-emerald-300 font-semibold border border-emerald-500/30 shadow-xs'
@@ -174,7 +195,7 @@ export const Sidebar: React.FC<SidebarProps> = ({
           </div>
 
           <button
-            onClick={() => onSelectList(null)}
+            onClick={() => handleAction(() => onSelectList(null))}
             className={`w-full flex items-center justify-between px-2.5 py-2 rounded-xl text-xs font-medium transition cursor-pointer ${
               activeView === 'lists' && selectedListId === null
                 ? 'bg-gradient-to-r from-emerald-500/20 to-cyan-500/20 text-emerald-300 font-semibold border border-emerald-500/30 shadow-xs'
@@ -188,7 +209,7 @@ export const Sidebar: React.FC<SidebarProps> = ({
           </button>
 
           <button
-            onClick={() => onSelectList('all_single')}
+            onClick={() => handleAction(() => onSelectList('all_single'))}
             className={`w-full flex items-center justify-between px-2.5 py-2 rounded-xl text-xs font-medium transition cursor-pointer ${
               activeView === 'lists' && selectedListId === 'all_single'
                 ? 'bg-gradient-to-r from-emerald-500/20 to-teal-500/20 text-emerald-300 font-semibold border border-emerald-500/30 shadow-xs'
@@ -202,7 +223,7 @@ export const Sidebar: React.FC<SidebarProps> = ({
           </button>
 
           <button
-            onClick={() => onSelectList('all_compound')}
+            onClick={() => handleAction(() => onSelectList('all_compound'))}
             className={`w-full flex items-center justify-between px-2.5 py-2 rounded-xl text-xs font-medium transition cursor-pointer ${
               activeView === 'lists' && selectedListId === 'all_compound'
                 ? 'bg-gradient-to-r from-amber-500/20 to-yellow-500/20 text-amber-300 font-semibold border border-amber-500/30 shadow-xs'
@@ -229,7 +250,7 @@ export const Sidebar: React.FC<SidebarProps> = ({
               return (
                 <div key={list.id} className="group relative flex items-center">
                   <button
-                    onClick={() => onSelectList(list.id)}
+                    onClick={() => handleAction(() => onSelectList(list.id))}
                     className={`w-full flex items-center justify-between pl-2.5 pr-8 py-2 rounded-xl text-xs font-medium transition cursor-pointer ${
                       isSelected
                         ? 'bg-gradient-to-r from-emerald-500/20 to-cyan-500/20 text-cyan-300 font-semibold border border-cyan-500/30 shadow-xs'
@@ -246,7 +267,7 @@ export const Sidebar: React.FC<SidebarProps> = ({
                     type="button"
                     onClick={(e) => {
                       e.stopPropagation();
-                      onStartSession('random_test', list.id);
+                      handleAction(() => onStartSession('random_test', list.id));
                     }}
                     className="absolute right-1.5 p-1 rounded-lg hover:bg-emerald-500/20 text-slate-500 hover:text-emerald-300 transition cursor-pointer opacity-70 group-hover:opacity-100"
                     title={`Kiểm tra danh sách ${list.name}`}
@@ -270,7 +291,7 @@ export const Sidebar: React.FC<SidebarProps> = ({
                   return (
                     <div key={list.id} className="group relative flex items-center my-0.5">
                       <button
-                        onClick={() => onSelectList(list.id)}
+                        onClick={() => handleAction(() => onSelectList(list.id))}
                         className={`w-full flex items-center justify-between pl-2.5 pr-8 py-2 rounded-xl text-xs font-medium transition cursor-pointer ${
                           isSelected
                             ? 'bg-gradient-to-r from-emerald-500/20 to-cyan-500/20 text-cyan-300 font-semibold border border-cyan-500/30 shadow-xs'
@@ -296,13 +317,50 @@ export const Sidebar: React.FC<SidebarProps> = ({
       {/* Footer Settings */}
       <div className="p-3 border-t border-slate-800/80 bg-slate-950/40">
         <button
-          onClick={onOpenSettings}
+          onClick={() => handleAction(onOpenSettings)}
           className="w-full flex items-center gap-2.5 px-2.5 py-2 text-xs font-medium text-slate-400 hover:text-slate-200 hover:bg-slate-800/60 rounded-xl transition cursor-pointer"
         >
           <Settings className="w-4 h-4 text-slate-400" />
           <span>Sao lưu & Cài đặt</span>
         </button>
       </div>
-    </aside>
+    </div>
+  );
+
+  return (
+    <>
+      {/* Desktop Persistent Sidebar (>= 768px) */}
+      <aside className="hidden md:flex w-64 bg-slate-900/90 backdrop-blur-xl border-r border-slate-800/80 h-screen shrink-0 z-20">
+        {renderContent(false)}
+      </aside>
+
+      {/* Mobile Drawer (Slides out on < 768px when isOpenOnMobile is true) */}
+      <AnimatePresence>
+        {isOpenOnMobile && (
+          <div className="fixed inset-0 z-50 md:hidden">
+            {/* Backdrop Blur Overlay */}
+            <motion.div
+              initial={{ opacity: 0 }}
+              animate={{ opacity: 1 }}
+              exit={{ opacity: 0 }}
+              transition={{ duration: 0.2 }}
+              onClick={onCloseMobile}
+              className="absolute inset-0 bg-slate-950/80 backdrop-blur-sm"
+            />
+
+            {/* Slide-in Drawer */}
+            <motion.aside
+              initial={{ x: '-100%' }}
+              animate={{ x: 0 }}
+              exit={{ x: '-100%' }}
+              transition={{ type: 'spring', damping: 26, stiffness: 320 }}
+              className="relative w-72 max-w-[85vw] h-full bg-slate-900 border-r border-slate-800 shadow-2xl flex flex-col z-10"
+            >
+              {renderContent(true)}
+            </motion.aside>
+          </div>
+        )}
+      </AnimatePresence>
+    </>
   );
 };
