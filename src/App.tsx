@@ -21,18 +21,36 @@ import {
   Bot,
   Menu,
   Settings,
+  Cloud,
+  RefreshCw,
+  CheckCircle2,
 } from 'lucide-react';
+import { User } from 'firebase/auth';
 import { Character, WordList, UserStats, StudySessionMode } from './types';
 import {
   initializeStorage,
   getCharacters,
   saveCharacters,
   getWordLists,
+  saveWordLists,
   getUserStats,
+  saveUserStats,
   removeCharacter,
 } from './services/storage';
 import { autoCategorizeCharacters } from './services/hskClassifier';
 import { syncLearnedCompoundWords } from './services/compoundWordDetector';
+import {
+  signInWithGoogle,
+  signOutUser,
+  subscribeToAuth,
+  loadCharactersFromCloud,
+  saveCharactersBatchToCloud,
+  loadWordListsFromCloud,
+  saveWordListsToCloud,
+  loadUserStatsFromCloud,
+  saveUserStatsToCloud,
+  testConnection,
+} from './services/firebase';
 
 export default function App() {
   const [characters, setCharacters] = useState<Character[]>([]);
@@ -46,6 +64,11 @@ export default function App() {
     lastStudyDate: new Date().toISOString().split('T')[0],
     totalStudyTimeSeconds: 0,
   });
+
+  // Cloud Sync & Auth State
+  const [currentUser, setCurrentUser] = useState<User | null>(null);
+  const [isSyncing, setIsSyncing] = useState(false);
+  const [syncToast, setSyncToast] = useState<{ message: string; type: 'success' | 'error' | 'info' } | null>(null);
 
   // UI State
   const [activeView, setActiveView] = useState<'lists' | 'study' | 'analytics' | 'grammar'>('lists');
@@ -65,7 +88,7 @@ export default function App() {
   const [pendingListId, setPendingListId] = useState<string | null>(null);
   const [sessionQuestionLimit, setSessionQuestionLimit] = useState<number | 'all'>(20);
 
-  // Initialize and load data on mount
+  // Initialize and load data on mount, plus subscribe to Firebase Auth
   useEffect(() => {
     initializeStorage();
     const loadedChars = getCharacters();
@@ -76,7 +99,128 @@ export default function App() {
     setCharacters(categorized);
     setWordLists(getWordLists());
     setStats(getUserStats());
+
+    // Test Firestore connection on boot
+    testConnection().catch(console.warn);
+
+    // Subscribe to Firebase Auth
+    const unsubscribe = subscribeToAuth((user) => {
+      setCurrentUser(user);
+      if (user) {
+        syncCloudData(user.uid);
+      }
+    });
+
+    return () => unsubscribe();
   }, []);
+
+  const syncCloudData = async (userId: string) => {
+    setIsSyncing(true);
+    setSyncToast({ message: 'Đang kết nối và đồng bộ dữ liệu đám mây...', type: 'info' });
+
+    try {
+      const [cloudChars, cloudLists, cloudStats] = await Promise.all([
+        loadCharactersFromCloud(userId),
+        loadWordListsFromCloud(userId),
+        loadUserStatsFromCloud(userId),
+      ]);
+
+      const localChars = getCharacters();
+      const localLists = getWordLists();
+      const localStats = getUserStats();
+
+      // Case 1: Cloud is completely empty but local has data -> Upload local to cloud
+      if (cloudChars.length === 0 && localChars.length > 0) {
+        await Promise.all([
+          saveCharactersBatchToCloud(userId, localChars),
+          saveWordListsToCloud(userId, localLists),
+          saveUserStatsToCloud(userId, localStats),
+        ]);
+        setSyncToast({
+          message: `Đã sao lưu ${localChars.length} từ vựng lên đám mây thành công!`,
+          type: 'success',
+        });
+      }
+      // Case 2: Cloud has data -> Merge cloud and local seamlessly
+      else if (cloudChars.length > 0) {
+        const charMap = new Map<string, Character>();
+        cloudChars.forEach((c) => charMap.set(c.hanzi, c));
+
+        const newLocalToUpload: Character[] = [];
+        localChars.forEach((lc) => {
+          if (!charMap.has(lc.hanzi)) {
+            charMap.set(lc.hanzi, lc);
+            newLocalToUpload.push(lc);
+          }
+        });
+
+        const mergedChars = autoCategorizeCharacters(Array.from(charMap.values()));
+        saveCharacters(mergedChars);
+        setCharacters(mergedChars);
+
+        // Upload any extra local items up to cloud
+        if (newLocalToUpload.length > 0) {
+          await saveCharactersBatchToCloud(userId, newLocalToUpload);
+        }
+
+        // Merge Word Lists
+        const listMap = new Map<string, WordList>();
+        cloudLists.forEach((l) => listMap.set(l.id, l));
+        localLists.forEach((ll) => {
+          if (!listMap.has(ll.id)) listMap.set(ll.id, ll);
+        });
+        const mergedLists = Array.from(listMap.values());
+        saveWordLists(mergedLists);
+        setWordLists(mergedLists);
+
+        if (cloudStats) {
+          saveUserStats(cloudStats);
+          setStats(cloudStats);
+        }
+
+        setSyncToast({
+          message: `Đồng bộ hoàn tất! (${mergedChars.length} từ vựng đã sẵn sàng)`,
+          type: 'success',
+        });
+      } else {
+        setSyncToast({ message: 'Đã kết nối đám mây!', type: 'success' });
+      }
+    } catch (err: any) {
+      console.error('Cloud Sync failed:', err);
+      setSyncToast({
+        message: 'Đồng bộ đám mây thất bại. Hãy kiểm tra kết nối mạng.',
+        type: 'error',
+      });
+    } finally {
+      setIsSyncing(false);
+      setTimeout(() => setSyncToast(null), 3500);
+    }
+  };
+
+  const handleSignInGoogle = async () => {
+    try {
+      setSyncToast({ message: 'Đang mở cửa sổ đăng nhập Google...', type: 'info' });
+      const user = await signInWithGoogle();
+      if (user) {
+        setSyncToast({ message: `Xin chào ${user.displayName || user.email}!`, type: 'success' });
+      }
+    } catch (err: any) {
+      console.error('Google Sign-in failed:', err);
+      setSyncToast({ message: 'Đăng nhập Google thất bại hoặc đã bị đóng.', type: 'error' });
+      setTimeout(() => setSyncToast(null), 3500);
+    }
+  };
+
+  const handleSignOut = async () => {
+    try {
+      await signOutUser();
+      setCurrentUser(null);
+      setSyncToast({ message: 'Đã đăng xuất tài khoản Google.', type: 'info' });
+      setTimeout(() => setSyncToast(null), 3000);
+    } catch (err) {
+      console.error('Sign-out error:', err);
+    }
+  };
 
   const refreshAllData = () => {
     const loadedChars = getCharacters();
@@ -85,8 +229,15 @@ export default function App() {
     const categorized = autoCategorizeCharacters(updatedCharacters);
     saveCharacters(categorized);
     setCharacters(categorized);
-    setWordLists(getWordLists());
+    const lists = getWordLists();
+    setWordLists(lists);
     setStats(getUserStats());
+
+    // If logged in, automatically push updates to Cloud
+    if (currentUser) {
+      saveCharactersBatchToCloud(currentUser.uid, categorized).catch(console.warn);
+      saveWordListsToCloud(currentUser.uid, lists).catch(console.warn);
+    }
   };
 
   // Due count calculation for SRS badge
@@ -165,6 +316,28 @@ export default function App() {
         </div>
 
         <div className="flex items-center gap-1.5">
+          {/* Cloud Sync Status / Button on Mobile */}
+          {currentUser ? (
+            <button
+              onClick={() => syncCloudData(currentUser.uid)}
+              disabled={isSyncing}
+              className="flex items-center gap-1 px-2 py-1 rounded-full bg-emerald-500/10 hover:bg-emerald-500/20 text-emerald-300 border border-emerald-500/30 text-xs font-semibold cursor-pointer active:scale-95 transition"
+              title="Đang kết nối Cloud - Bấm để đồng bộ ngay"
+            >
+              <span className="w-1.5 h-1.5 rounded-full bg-emerald-400 animate-pulse" />
+              <Cloud className={`w-3.5 h-3.5 text-emerald-400 ${isSyncing ? 'animate-pulse' : ''}`} />
+            </button>
+          ) : (
+            <button
+              onClick={handleSignInGoogle}
+              className="flex items-center gap-1 px-2.5 py-1 rounded-full bg-cyan-500/10 hover:bg-cyan-500/20 text-cyan-300 border border-cyan-500/30 text-xs font-semibold cursor-pointer active:scale-95 transition"
+              title="Đăng nhập Google để đồng bộ Cloud"
+            >
+              <Cloud className="w-3.5 h-3.5 text-cyan-400" />
+              <span className="text-[10px]">Đồng bộ</span>
+            </button>
+          )}
+
           {dueCount > 0 && (
             <button
               onClick={() => handleStartSession('smart_daily')}
@@ -193,6 +366,33 @@ export default function App() {
         </div>
       </header>
 
+      {/* Cloud Sync Toast Notification */}
+      <AnimatePresence>
+        {syncToast && (
+          <motion.div
+            initial={{ opacity: 0, y: -20, scale: 0.95 }}
+            animate={{ opacity: 1, y: 0, scale: 1 }}
+            exit={{ opacity: 0, y: -20, scale: 0.95 }}
+            className={`fixed top-4 left-1/2 -translate-x-1/2 z-50 px-4 py-2.5 rounded-2xl shadow-2xl border text-xs font-medium flex items-center gap-2 backdrop-blur-xl ${
+              syncToast.type === 'success'
+                ? 'bg-emerald-950/90 border-emerald-500/50 text-emerald-200 shadow-emerald-500/10'
+                : syncToast.type === 'error'
+                ? 'bg-rose-950/90 border-rose-500/50 text-rose-200 shadow-rose-500/10'
+                : 'bg-slate-900/90 border-cyan-500/50 text-cyan-200 shadow-cyan-500/10'
+            }`}
+          >
+            {syncToast.type === 'success' ? (
+              <CheckCircle2 className="w-4 h-4 text-emerald-400 shrink-0" />
+            ) : syncToast.type === 'error' ? (
+              <span className="text-rose-400 font-bold shrink-0">✕</span>
+            ) : (
+              <RefreshCw className="w-4 h-4 text-cyan-400 animate-spin shrink-0" />
+            )}
+            <span>{syncToast.message}</span>
+          </motion.div>
+        )}
+      </AnimatePresence>
+
       {/* Notion-style Dark Glass Sidebar (Desktop permanent, Mobile slide-in drawer) */}
       <Sidebar
         wordLists={wordLists}
@@ -207,6 +407,11 @@ export default function App() {
         onSelectList={handleSelectList}
         isOpenOnMobile={isMobileMenuOpen}
         onCloseMobile={() => setIsMobileMenuOpen(false)}
+        currentUser={currentUser}
+        isSyncing={isSyncing}
+        onSignInGoogle={handleSignInGoogle}
+        onSignOut={handleSignOut}
+        onSyncNow={() => currentUser && syncCloudData(currentUser.uid)}
       />
 
       {/* Main Content Area with Canva Slide Transition */}

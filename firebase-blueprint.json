@@ -1,0 +1,85 @@
+{
+  "entities": {
+    "UserProfile": {
+      "title": "UserProfile",
+      "description": "User profile information",
+      "type": "object",
+      "properties": {
+        "uid": { "type": "string", "description": "User ID" },
+        "email": { "type": "string", "description": "User email address" },
+        "displayName": { "type": "string", "description": "User display name" },
+        "photoURL": { "type": "string", "description": "User avatar URL" },
+        "updatedAt": { "type": "string", "description": "ISO timestamp of last update" }
+      },
+      "required": ["uid"]
+    },
+    "Character": {
+      "title": "Character",
+      "description": "A Chinese character or compound word tracked in the user's vocabulary",
+      "type": "object",
+      "properties": {
+        "id": { "type": "string", "description": "Unique identifier" },
+        "userId": { "type": "string", "description": "Owner user ID" },
+        "hanzi": { "type": "string", "description": "Chinese character or word" },
+        "pinyin": { "type": "string", "description": "Pinyin romanization" },
+        "hanViet": { "type": "string", "description": "Sino-Vietnamese pronunciation" },
+        "meaning": { "type": "string", "description": "Vietnamese meaning" },
+        "mnemonic": { "type": "string", "description": "Memory tip or mnemonic" },
+        "strokeCount": { "type": "number", "description": "Number of strokes" },
+        "radical": { "type": "string", "description": "Radical or classification" },
+        "category": { "type": "string", "description": "Category or list reference" },
+        "srs": { "type": "object", "description": "Spaced repetition state" },
+        "updatedAt": { "type": "number", "description": "Timestamp in milliseconds" }
+      },
+      "required": ["id", "userId", "hanzi", "pinyin", "meaning"]
+    },
+    "WordList": {
+      "title": "WordList",
+      "description": "User custom vocabulary list",
+      "type": "object",
+      "properties": {
+        "id": { "type": "string", "description": "Unique list identifier" },
+        "userId": { "type": "string", "description": "Owner user ID" },
+        "name": { "type": "string", "description": "List name" },
+        "description": { "type": "string", "description": "List description" },
+        "createdAt": { "type": "number", "description": "Creation timestamp in milliseconds" }
+      },
+      "required": ["id", "userId", "name"]
+    },
+    "UserStats": {
+      "title": "UserStats",
+      "description": "User learning statistics and streak",
+      "type": "object",
+      "properties": {
+        "userId": { "type": "string", "description": "Owner user ID" },
+        "totalSaved": { "type": "number", "description": "Total words saved" },
+        "totalMastered": { "type": "number", "description": "Total mastered words" },
+        "totalReviews": { "type": "number", "description": "Total reviews completed" },
+        "accuracy": { "type": "number", "description": "Overall accuracy percentage" },
+        "streakDays": { "type": "number", "description": "Learning streak in days" },
+        "lastStudyDate": { "type": "string", "description": "Last study date YYYY-MM-DD" },
+        "totalStudyTimeSeconds": { "type": "number", "description": "Total study time in seconds" },
+        "updatedAt": { "type": "number", "description": "Timestamp in milliseconds" }
+      },
+      "required": ["userId"]
+    }
+  },
+  "firestore": {
+    "/users/{userId}": {
+      "schema": "UserProfile",
+      "description": "User profile document"
+    },
+    "/users/{userId}/characters/{characterId}": {
+      "schema": "Character",
+      "description": "Vocabulary characters belonging to the user"
+    },
+    "/users/{userId}/wordLists/{listId}": {
+      "schema": "WordList",
+      "description": "Custom word lists belonging to the user"
+    },
+    "/users/{userId}/stats/main": {
+      "schema": "UserStats",
+      "description": "Learning stats and streak for the user"
+    }
+  }
+}

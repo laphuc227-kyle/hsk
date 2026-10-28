@@ -15,6 +15,11 @@ import {
   Combine,
   FileQuestion,
   X,
+  Cloud,
+  RefreshCw,
+  LogIn,
+  LogOut,
+  CheckCircle2,
 } from 'lucide-react';
 import { WordList, StudySessionMode } from '../types';
 
@@ -31,6 +36,11 @@ interface SidebarProps {
   onSelectList: (listId: string | null) => void;
   isOpenOnMobile?: boolean;
   onCloseMobile?: () => void;
+  currentUser?: { displayName?: string | null; email?: string | null; photoURL?: string | null } | null;
+  isSyncing?: boolean;
+  onSignInGoogle?: () => void;
+  onSignOut?: () => void;
+  onSyncNow?: () => void;
 }
 
 export const Sidebar: React.FC<SidebarProps> = ({
@@ -46,6 +56,11 @@ export const Sidebar: React.FC<SidebarProps> = ({
   onSelectList,
   isOpenOnMobile = false,
   onCloseMobile,
+  currentUser,
+  isSyncing = false,
+  onSignInGoogle,
+  onSignOut,
+  onSyncNow,
 }) => {
   const handleAction = (action: () => void) => {
     action();
@@ -314,11 +329,83 @@ export const Sidebar: React.FC<SidebarProps> = ({
         </div>
       </div>
 
-      {/* Footer Settings */}
-      <div className="p-3 border-t border-slate-800/80 bg-slate-950/40">
+      {/* Cloud Sync Account Card */}
+      <div className="p-3 border-t border-slate-800/80 bg-slate-950/60 space-y-2">
+        {currentUser ? (
+          <div className="space-y-2">
+            <div className="flex items-center justify-between">
+              <div className="flex items-center gap-2 min-w-0">
+                {currentUser.photoURL ? (
+                  <img
+                    src={currentUser.photoURL}
+                    alt={currentUser.displayName || 'Avatar'}
+                    className="w-7 h-7 rounded-full border border-emerald-500/40 object-cover shrink-0"
+                  />
+                ) : (
+                  <div className="w-7 h-7 rounded-full bg-emerald-500/20 text-emerald-300 font-bold text-xs flex items-center justify-center border border-emerald-500/30 shrink-0">
+                    {currentUser.displayName ? currentUser.displayName[0].toUpperCase() : 'U'}
+                  </div>
+                )}
+                <div className="min-w-0">
+                  <p className="text-xs font-bold text-slate-200 truncate">
+                    {currentUser.displayName || 'Tài khoản Google'}
+                  </p>
+                  <div className="flex items-center gap-1.5 text-[10px] text-emerald-400">
+                    <span className="w-1.5 h-1.5 rounded-full bg-emerald-400 animate-pulse" />
+                    <span>Đã kết nối Cloud</span>
+                  </div>
+                </div>
+              </div>
+
+              <button
+                type="button"
+                onClick={onSyncNow}
+                disabled={isSyncing}
+                className="p-1.5 rounded-lg text-slate-400 hover:text-cyan-300 hover:bg-slate-800/80 transition cursor-pointer active:scale-95 disabled:opacity-50"
+                title="Đồng bộ đám mây ngay"
+              >
+                <RefreshCw className={`w-3.5 h-3.5 ${isSyncing ? 'animate-spin text-cyan-400' : ''}`} />
+              </button>
+            </div>
+
+            <div className="flex items-center justify-between pt-1 border-t border-slate-800/60 text-[10px]">
+              <span className="text-slate-500">Tự động đồng bộ</span>
+              <button
+                type="button"
+                onClick={onSignOut}
+                className="text-slate-400 hover:text-rose-400 transition cursor-pointer flex items-center gap-1"
+              >
+                <LogOut className="w-3 h-3" />
+                <span>Đăng xuất</span>
+              </button>
+            </div>
+          </div>
+        ) : (
+          <div className="space-y-2">
+            <div className="flex items-center gap-2">
+              <div className="p-1.5 rounded-lg bg-emerald-500/10 text-emerald-400 border border-emerald-500/20 shrink-0">
+                <Cloud className="w-4 h-4" />
+              </div>
+              <div className="min-w-0">
+                <p className="text-xs font-bold text-slate-200">Đồng bộ Đám mây</p>
+                <p className="text-[10px] text-slate-400 truncate">Đồng bộ Laptop & iPhone</p>
+              </div>
+            </div>
+
+            <button
+              type="button"
+              onClick={onSignInGoogle}
+              className="w-full py-1.5 px-2.5 rounded-xl text-xs font-semibold bg-gradient-to-r from-emerald-500 to-teal-500 hover:from-emerald-400 hover:to-teal-400 text-slate-950 flex items-center justify-center gap-1.5 shadow-md shadow-emerald-500/20 transition cursor-pointer active:scale-95"
+            >
+              <LogIn className="w-3.5 h-3.5" />
+              <span>Đăng nhập Google</span>
+            </button>
+          </div>
+        )}
+
         <button
           onClick={() => handleAction(onOpenSettings)}
-          className="w-full flex items-center gap-2.5 px-2.5 py-2 text-xs font-medium text-slate-400 hover:text-slate-200 hover:bg-slate-800/60 rounded-xl transition cursor-pointer"
+          className="w-full flex items-center gap-2.5 px-2 py-1.5 text-xs font-medium text-slate-400 hover:text-slate-200 hover:bg-slate-800/60 rounded-xl transition cursor-pointer"
         >
           <Settings className="w-4 h-4 text-slate-400" />
           <span>Sao lưu & Cài đặt</span>
