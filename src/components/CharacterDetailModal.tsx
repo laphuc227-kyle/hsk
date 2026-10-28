@@ -130,7 +130,7 @@ export const CharacterDetailModal: React.FC<CharacterDetailModalProps> = ({
       animate={{ opacity: 1 }}
       exit={{ opacity: 0 }}
       transition={{ duration: 0.2 }}
-      className="fixed inset-0 z-50 flex items-center justify-center p-4 bg-black/70 backdrop-blur-md"
+      className="fixed inset-0 z-50 flex items-center justify-center p-2.5 sm:p-4 bg-black/75 backdrop-blur-md"
       onClick={onClose}
     >
       <motion.div
@@ -138,11 +138,11 @@ export const CharacterDetailModal: React.FC<CharacterDetailModalProps> = ({
         animate={{ opacity: 1, scale: 1, y: 0 }}
         exit={{ opacity: 0, scale: 0.94, y: 20 }}
         transition={{ duration: 0.3, ease: [0.22, 1, 0.36, 1] }}
-        className="bg-slate-900 w-full max-w-2xl max-h-[90vh] rounded-2xl shadow-2xl border border-slate-800 flex flex-col overflow-hidden text-slate-100"
+        className="bg-slate-900 w-full max-w-2xl max-h-[92vh] rounded-2xl shadow-2xl border border-slate-800 flex flex-col overflow-hidden text-slate-100"
         onClick={(e) => e.stopPropagation()}
       >
         {/* Modal Header */}
-        <div className="flex items-center justify-between px-6 py-4 border-b border-slate-800/80 bg-slate-950/60">
+        <div className="flex items-center justify-between px-4 sm:px-6 py-3 sm:py-4 border-b border-slate-800/80 bg-slate-950/60">
           <div className="flex items-center gap-2">
             <span className="text-xs font-mono px-2 py-0.5 rounded-md bg-emerald-500/20 text-emerald-300 border border-emerald-500/30">
               Chữ Hán Chi Tiết
@@ -160,7 +160,7 @@ export const CharacterDetailModal: React.FC<CharacterDetailModalProps> = ({
               title="Tra cứu & cập nhật thông tin chuẩn xác từ từ điển/AI"
             >
               <RefreshCw className={`w-3.5 h-3.5 ${isRefreshingDetails ? 'animate-spin text-cyan-400' : ''}`} />
-              <span>{isRefreshingDetails ? 'Đang tải...' : 'Làm mới chi tiết'}</span>
+              <span className="hidden sm:inline">{isRefreshingDetails ? 'Đang tải...' : 'Làm mới chi tiết'}</span>
             </button>
             <button
               onClick={onClose}
@@ -172,7 +172,7 @@ export const CharacterDetailModal: React.FC<CharacterDetailModalProps> = ({
         </div>
 
         {/* Modal Scroll Body */}
-        <div className="flex-1 overflow-y-auto p-6 space-y-6">
+        <div className="flex-1 overflow-y-auto p-4 sm:p-6 space-y-5 sm:space-y-6">
           {/* Notification / Incomplete Banner */}
           {refreshSuccessMessage && (
             <div className="p-3 bg-emerald-950/60 border border-emerald-500/40 rounded-xl text-xs text-emerald-300 flex items-center gap-2">
@@ -203,11 +203,11 @@ export const CharacterDetailModal: React.FC<CharacterDetailModalProps> = ({
             </div>
           )}
           {/* Main Top Section: Hero Hanzi + Stroke Canvas */}
-          <div className="grid grid-cols-1 md:grid-cols-2 gap-6 items-center bg-slate-950/80 p-5 rounded-2xl border border-slate-800/80 shadow-inner">
+          <div className="grid grid-cols-1 md:grid-cols-2 gap-6 items-center bg-slate-950/80 p-4 sm:p-5 rounded-2xl border border-slate-800/80 shadow-inner">
             {/* Left Column: Big Hanzi */}
             <div className="flex flex-col items-center md:items-start text-center md:text-left space-y-2">
               <div className="flex items-baseline gap-3">
-                <span className="text-6xl font-serif font-bold text-slate-100 tracking-tight">
+                <span className="text-5xl sm:text-6xl font-serif font-bold text-slate-100 tracking-tight">
                   {character.hanzi}
                 </span>
                 <button
@@ -219,16 +219,16 @@ export const CharacterDetailModal: React.FC<CharacterDetailModalProps> = ({
                 </button>
               </div>
 
-              <div className="flex flex-wrap items-center gap-2 pt-1">
-                <span className="text-lg font-mono font-bold text-cyan-300 bg-cyan-950/60 px-2.5 py-0.5 rounded-lg border border-cyan-500/30">
+              <div className="flex flex-wrap items-center justify-center md:justify-start gap-2 pt-1">
+                <span className="text-base sm:text-lg font-mono font-bold text-cyan-300 bg-cyan-950/60 px-2.5 py-0.5 rounded-lg border border-cyan-500/30">
                   {character.pinyin}
                 </span>
-                <span className="text-sm font-bold text-teal-300 bg-teal-950/60 px-2 py-0.5 rounded-lg border border-teal-500/30 uppercase">
+                <span className="text-xs sm:text-sm font-bold text-teal-300 bg-teal-950/60 px-2 py-0.5 rounded-lg border border-teal-500/30 uppercase">
                   {character.hanViet}
                 </span>
               </div>
 
-              <p className="text-base text-slate-200 font-medium pt-2">
+              <p className="text-sm sm:text-base text-slate-200 font-medium pt-2">
                 {character.meaning}
               </p>
 
@@ -244,21 +244,13 @@ export const CharacterDetailModal: React.FC<CharacterDetailModalProps> = ({
               </div>
             </div>
 
-            {/* Right Column: Stroke Writing Canvas for single characters */}
-            <div className="flex flex-col items-center justify-center pt-2 md:pt-0">
-              {character.hanzi.length === 1 ? (
-                <StrokeWriterCanvas hanzi={character.hanzi} pinyin={character.pinyin} size={180} />
-              ) : (
-                <div className="w-full h-full min-h-[160px] flex flex-col items-center justify-center p-4 bg-slate-900/80 rounded-2xl border border-slate-800 text-center space-y-2">
-                  <span className="text-4xl font-serif font-bold text-amber-300">{character.hanzi}</span>
-                  <div className="text-xs font-semibold text-slate-300">
-                    Từ ghép ({character.hanzi.length} chữ đơn)
-                  </div>
-                  <p className="text-[11px] text-slate-400 max-w-xs leading-relaxed">
-                    Từ ghép được kết hợp từ các chữ đơn. Tập trung học ý nghĩa, phiên âm và cách sử dụng từ trong câu.
-                  </p>
-                </div>
-              )}
+            {/* Right Column: Stroke Writing Canvas with touch isolation & compound support */}
+            <div className="flex flex-col items-center justify-center pt-2 md:pt-0 w-full">
+              <StrokeWriterCanvas
+                hanzi={character.hanzi}
+                pinyin={character.pinyin}
+                size={230}
+              />
             </div>
           </div>
 

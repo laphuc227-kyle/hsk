@@ -1,6 +1,6 @@
 import React, { useState, useEffect } from 'react';
 import { motion, AnimatePresence } from 'motion/react';
-import { Volume2, CheckCircle, XCircle, ArrowRight, RefreshCw, Sparkles, BookOpen, Clock, ShieldCheck, Award, Filter, Eye, EyeOff, FileQuestion } from 'lucide-react';
+import { Volume2, CheckCircle, XCircle, ArrowRight, RefreshCw, Sparkles, BookOpen, Clock, ShieldCheck, Award, Filter, Eye, EyeOff, FileQuestion, PenTool } from 'lucide-react';
 import { Character, QuizQuestion, StudySessionMode, QuestionType, WordList } from '../types';
 import { selectCharactersForSession, generateQuestionForCharacter, calculateSRSUpdate } from '../services/srs';
 import { generateSentenceClozeQuestions } from '../services/sentenceCloze';
@@ -37,6 +37,9 @@ export const StudySession: React.FC<StudySessionProps> = ({
   const [isAnswered, setIsAnswered] = useState(false);
   const [isCorrect, setIsCorrect] = useState(false);
   const [flashcardFlipped, setFlashcardFlipped] = useState(false);
+  const [autoPlayAudio, setAutoPlayAudio] = useState(true);
+  const [isPracticingStrokeOnCard, setIsPracticingStrokeOnCard] = useState(false);
+  const [dragOffset, setDragOffset] = useState(0);
 
   // Session Stats
   const [correctCount, setCorrectCount] = useState(0);
@@ -135,10 +138,63 @@ export const StudySession: React.FC<StudySessionProps> = ({
 
   useEffect(() => {
     setFlashcardFlipped(false);
+    setIsPracticingStrokeOnCard(false);
+    setDragOffset(0);
     setSelectedOption(null);
     setTypingInput('');
     setIsAnswered(false);
   }, [currentIndex, currentQ]);
+
+  const handleFlipCard = () => {
+    if (typeof navigator !== 'undefined' && navigator.vibrate) {
+      navigator.vibrate(15);
+    }
+    const willFlip = !flashcardFlipped;
+    setFlashcardFlipped(willFlip);
+    if (willFlip && autoPlayAudio) {
+      handlePlayAudio();
+    }
+  };
+
+  // Keyboard shortcuts for flashcard & study session
+  useEffect(() => {
+    const handleKeyDown = (e: KeyboardEvent) => {
+      if (['INPUT', 'TEXTAREA', 'SELECT'].includes((e.target as HTMLElement)?.tagName)) {
+        return;
+      }
+
+      if (currentQ?.type === 'flashcard') {
+        if (e.code === 'Space' || e.key === ' ') {
+          e.preventDefault();
+          handleFlipCard();
+        } else if (e.key === 'r' || e.key === 'R') {
+          e.preventDefault();
+          handlePlayAudio();
+        } else if (flashcardFlipped) {
+          if (e.key === '1') {
+            e.preventDefault();
+            if (typeof navigator !== 'undefined' && navigator.vibrate) navigator.vibrate([20, 20]);
+            handleFlashcardRating(0);
+          } else if (e.key === '2') {
+            e.preventDefault();
+            if (typeof navigator !== 'undefined' && navigator.vibrate) navigator.vibrate(15);
+            handleFlashcardRating(1);
+          } else if (e.key === '3') {
+            e.preventDefault();
+            if (typeof navigator !== 'undefined' && navigator.vibrate) navigator.vibrate(20);
+            handleFlashcardRating(2);
+          } else if (e.key === '4') {
+            e.preventDefault();
+            if (typeof navigator !== 'undefined' && navigator.vibrate) navigator.vibrate([20, 30]);
+            handleFlashcardRating(3);
+          }
+        }
+      }
+    };
+
+    window.addEventListener('keydown', handleKeyDown);
+    return () => window.removeEventListener('keydown', handleKeyDown);
+  }, [currentQ, flashcardFlipped, autoPlayAudio]);
 
   const handlePlayAudio = () => {
     if (currentQ?.audioText) {
@@ -614,18 +670,33 @@ export const StudySession: React.FC<StudySessionProps> = ({
       </div>
 
       {/* Question Visibility & Difficulty Control Toolbar */}
-      <div className="flex items-center justify-between gap-3 bg-slate-900/80 p-3 px-4 rounded-2xl border border-slate-800 shadow-lg text-xs backdrop-blur-xl">
+      <div className="flex items-center justify-between flex-wrap gap-2.5 bg-slate-900/80 p-2.5 sm:p-3 px-3 sm:px-4 rounded-2xl border border-slate-800 shadow-lg text-xs backdrop-blur-xl">
         <div className="flex items-center gap-2 text-slate-300 font-medium">
-          <Sparkles className="w-4 h-4 text-amber-400" />
-          <span className="hidden sm:inline text-xs font-bold">Chế độ thử thách:</span>
-          <span className="sm:hidden text-xs font-bold">Hiển thị:</span>
+          <Sparkles className="w-4 h-4 text-amber-400 shrink-0" />
+          <span className="hidden sm:inline text-xs font-bold">Chế độ hiển thị:</span>
         </div>
 
-        <div className="flex items-center gap-2">
+        <div className="flex items-center flex-wrap gap-1.5 sm:gap-2">
+          {currentQ.type === 'flashcard' && (
+            <button
+              type="button"
+              onClick={() => setAutoPlayAudio(!autoPlayAudio)}
+              className={`px-2.5 py-1.5 rounded-xl text-xs font-bold transition flex items-center gap-1 cursor-pointer border ${
+                autoPlayAudio
+                  ? 'bg-emerald-500/20 text-emerald-300 border-emerald-500/40 shadow-xs'
+                  : 'bg-slate-950 text-slate-500 border-slate-800 hover:text-slate-300'
+              }`}
+              title={autoPlayAudio ? 'Đang bật tự động đọc âm khi lật thẻ' : 'Tắt tự động đọc âm khi lật'}
+            >
+              <Volume2 className="w-3.5 h-3.5" />
+              <span className="text-[11px] sm:text-xs">Tự đọc {autoPlayAudio ? 'Bật' : 'Tắt'}</span>
+            </button>
+          )}
+
           <button
             type="button"
             onClick={() => setShowPinyin(!showPinyin)}
-            className={`px-3 py-1.5 rounded-xl text-xs font-bold transition flex items-center gap-1.5 cursor-pointer border ${
+            className={`px-2.5 py-1.5 rounded-xl text-xs font-bold transition flex items-center gap-1 cursor-pointer border ${
               showPinyin
                 ? 'bg-cyan-500/20 text-cyan-300 border-cyan-500/40 shadow-xs'
                 : 'bg-slate-950 text-slate-500 border-slate-800 hover:text-slate-300'
@@ -633,13 +704,13 @@ export const StudySession: React.FC<StudySessionProps> = ({
             title={showPinyin ? 'Ẩn Pinyin để tăng độ khó' : 'Bật hiển thị Pinyin'}
           >
             {showPinyin ? <Eye className="w-3.5 h-3.5 text-cyan-400" /> : <EyeOff className="w-3.5 h-3.5 text-slate-500" />}
-            <span>Pinyin {showPinyin ? 'Hiện' : 'Ẩn'}</span>
+            <span className="text-[11px] sm:text-xs">Pinyin {showPinyin ? 'Hiện' : 'Ẩn'}</span>
           </button>
 
           <button
             type="button"
             onClick={() => setShowHanViet(!showHanViet)}
-            className={`px-3 py-1.5 rounded-xl text-xs font-bold transition flex items-center gap-1.5 cursor-pointer border ${
+            className={`px-2.5 py-1.5 rounded-xl text-xs font-bold transition flex items-center gap-1 cursor-pointer border ${
               showHanViet
                 ? 'bg-teal-500/20 text-teal-300 border-teal-500/40 shadow-xs'
                 : 'bg-slate-950 text-slate-500 border-slate-800 hover:text-slate-300'
@@ -647,13 +718,13 @@ export const StudySession: React.FC<StudySessionProps> = ({
             title={showHanViet ? 'Ẩn Âm Hán Việt để thử thách trí nhớ' : 'Bật hiển thị Âm Hán Việt'}
           >
             {showHanViet ? <Eye className="w-3.5 h-3.5 text-teal-400" /> : <EyeOff className="w-3.5 h-3.5 text-slate-500" />}
-            <span>Hán Việt {showHanViet ? 'Hiện' : 'Ẩn'}</span>
+            <span className="text-[11px] sm:text-xs">Hán Việt {showHanViet ? 'Hiện' : 'Ẩn'}</span>
           </button>
 
           <button
             type="button"
             onClick={() => setShowMeaning(!showMeaning)}
-            className={`px-3 py-1.5 rounded-xl text-xs font-bold transition flex items-center gap-1.5 cursor-pointer border ${
+            className={`px-2.5 py-1.5 rounded-xl text-xs font-bold transition flex items-center gap-1 cursor-pointer border ${
               showMeaning
                 ? 'bg-purple-500/20 text-purple-300 border-purple-500/40 shadow-xs'
                 : 'bg-slate-950 text-slate-500 border-slate-800 hover:text-slate-300'
@@ -661,7 +732,7 @@ export const StudySession: React.FC<StudySessionProps> = ({
             title={showMeaning ? 'Ẩn Nghĩa tiếng Việt để thử thách trí nhớ' : 'Bật hiển thị Nghĩa tiếng Việt'}
           >
             {showMeaning ? <Eye className="w-3.5 h-3.5 text-purple-400" /> : <EyeOff className="w-3.5 h-3.5 text-slate-500" />}
-            <span>Nghĩa {showMeaning ? 'Hiện' : 'Ẩn'}</span>
+            <span className="text-[11px] sm:text-xs">Nghĩa {showMeaning ? 'Hiện' : 'Ẩn'}</span>
           </button>
         </div>
       </div>
@@ -688,106 +759,350 @@ export const StudySession: React.FC<StudySessionProps> = ({
             )}
           </div>
 
-          {/* Question Type: Flashcard Mode */}
+          {/* Question Type: Flashcard Mode with 3D Flip & Mobile Touch Gestures */}
           {currentQ.type === 'flashcard' ? (
-            <div className="space-y-6">
-              <motion.div
-                whileHover={{ scale: 1.01 }}
-                whileTap={{ scale: 0.99 }}
-                onClick={() => setFlashcardFlipped(!flashcardFlipped)}
-                className="bg-slate-950/80 border border-slate-800 hover:border-emerald-500/40 rounded-2xl p-8 text-center cursor-pointer min-h-[220px] flex flex-col items-center justify-center space-y-3 transition-colors group shadow-inner"
+            <div className="space-y-5">
+              <div
+                className="relative w-full max-w-xl mx-auto select-none"
+                style={{ perspective: '1200px' }}
               >
-                <div className="text-6xl font-serif font-bold text-slate-100 group-hover:text-emerald-300 transition-colors">
-                  {currentQ.character.hanzi}
-                </div>
+                {/* Swipe Direction Indicators during Drag */}
+                <AnimatePresence>
+                  {dragOffset < -35 && (
+                    <motion.div
+                      initial={{ opacity: 0, scale: 0.8 }}
+                      animate={{ opacity: Math.min(1, Math.abs(dragOffset) / 80), scale: 1 }}
+                      exit={{ opacity: 0 }}
+                      className="absolute left-4 top-1/2 -translate-y-1/2 z-40 pointer-events-none bg-rose-600/90 text-white font-black text-xs sm:text-sm px-3.5 py-1.5 rounded-xl shadow-xl border-2 border-rose-300 uppercase tracking-wider -rotate-12"
+                    >
+                      ✕ Chưa nhớ
+                    </motion.div>
+                  )}
+                  {dragOffset > 35 && (
+                    <motion.div
+                      initial={{ opacity: 0, scale: 0.8 }}
+                      animate={{ opacity: Math.min(1, Math.abs(dragOffset) / 80), scale: 1 }}
+                      exit={{ opacity: 0 }}
+                      className="absolute right-4 top-1/2 -translate-y-1/2 z-40 pointer-events-none bg-emerald-600/90 text-white font-black text-xs sm:text-sm px-3.5 py-1.5 rounded-xl shadow-xl border-2 border-emerald-300 uppercase tracking-wider rotate-12"
+                    >
+                      ✓ Đã nhớ
+                    </motion.div>
+                  )}
+                </AnimatePresence>
 
-                {!flashcardFlipped ? (
-                  <p className="text-xs text-slate-500 font-mono group-hover:text-cyan-400 transition">
-                    [Chạm để lật xem đáp án]
-                  </p>
-                ) : (
-                  <motion.div
-                    initial={{ opacity: 0, y: 10 }}
-                    animate={{ opacity: 1, y: 0 }}
-                    transition={{ duration: 0.2 }}
-                    className="space-y-1.5"
+                {/* 3D Flip Card Container */}
+                <motion.div
+                  drag={flashcardFlipped && !isPracticingStrokeOnCard ? 'x' : false}
+                  dragConstraints={{ left: 0, right: 0 }}
+                  dragElastic={0.6}
+                  onDrag={(_, info) => setDragOffset(info.offset.x)}
+                  onDragEnd={(_, info) => {
+                    if (info.offset.x < -75) {
+                      if (typeof navigator !== 'undefined' && navigator.vibrate) navigator.vibrate([20, 20]);
+                      handleFlashcardRating(0);
+                    } else if (info.offset.x > 75) {
+                      if (typeof navigator !== 'undefined' && navigator.vibrate) navigator.vibrate(25);
+                      handleFlashcardRating(2);
+                    }
+                    setDragOffset(0);
+                  }}
+                  animate={{ rotateY: flashcardFlipped ? 180 : 0 }}
+                  transition={{ duration: 0.45, ease: [0.22, 1, 0.36, 1] }}
+                  style={{ transformStyle: 'preserve-3d', WebkitTransformStyle: 'preserve-3d' }}
+                  className="w-full relative min-h-[290px] sm:min-h-[330px] cursor-pointer"
+                  onClick={handleFlipCard}
+                >
+                  {/* FRONT FACE */}
+                  <div
+                    style={{
+                      backfaceVisibility: 'hidden',
+                      WebkitBackfaceVisibility: 'hidden',
+                      transform: 'rotateY(0deg)',
+                    }}
+                    className="w-full h-full min-h-[290px] sm:min-h-[330px] bg-gradient-to-br from-slate-900/95 via-slate-950 to-slate-900/95 border-2 border-slate-800 hover:border-emerald-500/40 rounded-3xl p-5 sm:p-7 flex flex-col justify-between shadow-2xl relative overflow-hidden group"
                   >
-                    {showPinyin && (
-                      <p className="text-base font-mono font-bold text-cyan-400">
-                        {currentQ.character.pinyin}
-                      </p>
-                    )}
-                    {showHanViet && (
-                      <p className="text-xs font-bold text-teal-300 uppercase">
-                        {currentQ.character.hanViet}
-                      </p>
-                    )}
-                    {showMeaning && (
-                      <p className="text-sm text-slate-200 font-medium">
-                        {currentQ.character.meaning}
-                      </p>
-                    )}
-                    {(!showPinyin || !showHanViet || !showMeaning) && (
-                      <p className="text-[10px] text-slate-500 italic">
-                        ({[!showPinyin && 'Pinyin', !showHanViet && 'Hán Việt', !showMeaning && 'Nghĩa'].filter(Boolean).join(' & ')} đang ẩn)
-                      </p>
-                    )}
-                    {currentQ.character.mnemonic && (
-                      <p className="text-xs text-emerald-300 bg-emerald-500/10 p-2.5 rounded-xl border border-emerald-500/30 max-w-sm mx-auto">
-                        💡 {currentQ.character.mnemonic}
-                      </p>
+                    {/* Ambient subtle glow */}
+                    <div className="absolute top-0 right-0 w-36 h-36 bg-emerald-500/10 rounded-full blur-2xl pointer-events-none" />
+
+                    {/* Front Top Bar */}
+                    <div className="flex items-center justify-between z-10">
+                      <div className="flex items-center gap-1.5">
+                        <span className="text-[11px] font-mono font-bold px-2.5 py-1 rounded-xl bg-slate-800/90 text-cyan-300 border border-cyan-500/30">
+                          {currentQ.character.hanzi.length > 1
+                            ? `Từ ghép (${currentQ.character.hanzi.length} chữ)`
+                            : `Bộ: ${currentQ.character.radical || '—'}`}
+                        </span>
+                        {currentQ.character.strokeCount && (
+                          <span className="text-[11px] font-mono px-2 py-1 rounded-xl bg-slate-800/60 text-slate-400 border border-slate-700/50">
+                            {currentQ.character.strokeCount} nét
+                          </span>
+                        )}
+                      </div>
+
+                      <button
+                        type="button"
+                        onClick={(e) => {
+                          e.stopPropagation();
+                          handlePlayAudio();
+                        }}
+                        className="p-2 sm:px-3 sm:py-1.5 rounded-xl text-xs font-semibold bg-cyan-950/70 hover:bg-cyan-900/80 active:scale-95 text-cyan-300 border border-cyan-500/40 flex items-center gap-1.5 transition cursor-pointer shadow-xs"
+                        title="Nghe phát âm chuẩn"
+                      >
+                        <Volume2 className="w-4 h-4 text-cyan-400" />
+                        <span className="hidden sm:inline text-xs">Phát âm</span>
+                      </button>
+                    </div>
+
+                    {/* Front Center: Big Hanzi Character */}
+                    <div className="text-center py-6 sm:py-8 my-auto z-10">
+                      <div
+                        className={`font-serif font-black text-slate-100 group-hover:text-emerald-300 transition-colors drop-shadow-md select-none ${
+                          currentQ.character.hanzi.length > 3
+                            ? 'text-4xl sm:text-5xl'
+                            : currentQ.character.hanzi.length > 2
+                            ? 'text-5xl sm:text-6xl'
+                            : 'text-6xl sm:text-7xl'
+                        }`}
+                      >
+                        {currentQ.character.hanzi}
+                      </div>
+                    </div>
+
+                    {/* Front Bottom Bar: Flip hint */}
+                    <div className="flex items-center justify-center pt-2 border-t border-slate-800/80 text-xs text-slate-400 group-hover:text-emerald-300 transition font-medium z-10">
+                      <div className="flex items-center gap-2 bg-slate-900/80 px-4 py-1.5 rounded-full border border-slate-700/70 shadow-inner">
+                        <RefreshCw className="w-3.5 h-3.5 text-emerald-400 group-hover:rotate-180 transition-transform duration-500" />
+                        <span className="text-[11px] sm:text-xs">Chạm để lật xem đáp án</span>
+                      </div>
+                    </div>
+                  </div>
+
+                  {/* BACK FACE */}
+                  <div
+                    style={{
+                      backfaceVisibility: 'hidden',
+                      WebkitBackfaceVisibility: 'hidden',
+                      transform: 'rotateY(180deg)',
+                    }}
+                    className="absolute inset-0 w-full h-full min-h-[290px] sm:min-h-[330px] bg-gradient-to-br from-slate-900/95 via-slate-950 to-slate-900/95 border-2 border-emerald-500/40 rounded-3xl p-5 sm:p-6 flex flex-col justify-between shadow-2xl overflow-y-auto"
+                  >
+                    {/* Back Top Bar */}
+                    <div className="flex items-center justify-between pb-2 border-b border-slate-800/80">
+                      <div className="flex items-center gap-2">
+                        <span className="font-serif font-bold text-lg text-emerald-300">
+                          {currentQ.character.hanzi}
+                        </span>
+                        <span className="text-[10px] font-mono px-2 py-0.5 rounded-full bg-emerald-500/10 text-emerald-300 border border-emerald-500/30">
+                          Đáp án
+                        </span>
+                      </div>
+
+                      <div className="flex items-center gap-1.5">
+                        <button
+                          type="button"
+                          onClick={(e) => {
+                            e.stopPropagation();
+                            handlePlayAudio();
+                          }}
+                          className="p-1.5 sm:px-2.5 sm:py-1 rounded-xl text-xs font-semibold bg-cyan-950/70 hover:bg-cyan-900/80 text-cyan-300 border border-cyan-500/40 flex items-center gap-1 transition cursor-pointer active:scale-95"
+                          title="Nghe lại phát âm"
+                        >
+                          <Volume2 className="w-3.5 h-3.5 text-cyan-400" />
+                          <span className="text-[11px] hidden sm:inline">Nghe lại</span>
+                        </button>
+
+                        <button
+                          type="button"
+                          onClick={(e) => {
+                            e.stopPropagation();
+                            setIsPracticingStrokeOnCard(!isPracticingStrokeOnCard);
+                          }}
+                          className={`p-1.5 sm:px-2.5 sm:py-1 rounded-xl text-xs font-semibold border flex items-center gap-1 transition cursor-pointer active:scale-95 ${
+                            isPracticingStrokeOnCard
+                              ? 'bg-amber-500/20 text-amber-300 border-amber-500/40 shadow-xs'
+                              : 'bg-slate-900 hover:bg-slate-800 text-slate-300 border-slate-700'
+                          }`}
+                          title="Tập viết nét vẽ"
+                        >
+                          <PenTool className="w-3.5 h-3.5 text-amber-400" />
+                          <span className="text-[11px] hidden sm:inline">
+                            {isPracticingStrokeOnCard ? 'Ẩn viết nét' : 'Tập viết nét'}
+                          </span>
+                        </button>
+                      </div>
+                    </div>
+
+                    {/* Back Center Body */}
+                    {isPracticingStrokeOnCard ? (
+                      <div
+                        onClick={(e) => e.stopPropagation()}
+                        className="my-auto py-2 flex flex-col items-center cursor-default"
+                      >
+                        <StrokeWriterCanvas
+                          hanzi={currentQ.character.hanzi}
+                          pinyin={showPinyin ? currentQ.character.pinyin : undefined}
+                        />
+                      </div>
+                    ) : (
+                      <div className="space-y-2.5 my-auto py-2 text-center">
+                        {showPinyin && (
+                          <div className="flex items-center justify-center gap-2">
+                            <span className="text-2xl sm:text-3xl font-mono font-bold text-cyan-400 tracking-wide">
+                              {currentQ.character.pinyin}
+                            </span>
+                            <button
+                              type="button"
+                              onClick={(e) => {
+                                e.stopPropagation();
+                                handlePlayAudio();
+                              }}
+                              className="p-1 rounded-full text-cyan-400 hover:text-cyan-300 hover:bg-cyan-500/10 transition cursor-pointer"
+                              title="Nghe phát âm"
+                            >
+                              <Volume2 className="w-4 h-4" />
+                            </button>
+                          </div>
+                        )}
+
+                        {showHanViet && (
+                          <p className="text-xs sm:text-sm font-bold text-teal-300 uppercase tracking-wider">
+                            {currentQ.character.hanViet}
+                          </p>
+                        )}
+
+                        {showMeaning && (
+                          <p className="text-base sm:text-lg text-slate-100 font-semibold max-w-md mx-auto leading-snug">
+                            {currentQ.character.meaning}
+                          </p>
+                        )}
+
+                        {(!showPinyin || !showHanViet || !showMeaning) && (
+                          <p className="text-[11px] text-slate-500 italic">
+                            ({[!showPinyin && 'Pinyin', !showHanViet && 'Hán Việt', !showMeaning && 'Nghĩa'].filter(Boolean).join(' & ')} đang ẩn theo cài đặt)
+                          </p>
+                        )}
+
+                        {currentQ.character.mnemonic && (
+                          <div className="text-xs text-emerald-300 bg-emerald-500/10 p-2.5 rounded-2xl border border-emerald-500/30 max-w-md mx-auto flex items-start gap-2 text-left">
+                            <span className="text-base leading-none">💡</span>
+                            <p className="font-sans leading-relaxed">{currentQ.character.mnemonic}</p>
+                          </div>
+                        )}
+                      </div>
                     )}
 
-                    <div className="pt-2">
+                    {/* Back Bottom Actions */}
+                    <div className="pt-2 border-t border-slate-800/80 flex items-center justify-between gap-2">
                       <button
+                        type="button"
                         onClick={(e) => {
                           e.stopPropagation();
                           onOpenCharacterDetail(currentQ.character);
                         }}
-                        className="inline-flex items-center gap-1.5 px-3 py-1.5 text-xs font-semibold text-cyan-300 hover:text-cyan-200 bg-slate-900 hover:bg-slate-800 rounded-lg border border-cyan-500/40 transition cursor-pointer shadow-xs active:scale-95"
+                        className="inline-flex items-center gap-1.5 px-3 py-1.5 text-xs font-semibold text-cyan-300 hover:text-cyan-200 bg-slate-900 hover:bg-slate-800 rounded-xl border border-cyan-500/40 transition cursor-pointer shadow-xs active:scale-95"
                       >
                         <BookOpen className="w-3.5 h-3.5 text-cyan-400" />
-                        <span>Xem chi tiết chữ (Nét vẽ, từ điển)</span>
+                        <span>Từ điển chi tiết</span>
                       </button>
-                    </div>
-                  </motion.div>
-                )}
-              </motion.div>
 
+                      <span className="text-[10px] text-slate-400 font-mono hidden sm:inline">
+                        [Phím Space để lật lại]
+                      </span>
+
+                      <span className="text-[10px] text-slate-400 font-sans sm:hidden">
+                        👈 Vuốt trái / phải 👉
+                      </span>
+                    </div>
+                  </div>
+                </motion.div>
+              </div>
+
+              {/* Mobile-Optimized 2x2 / 4-Col SRS Rating Buttons */}
               {flashcardFlipped && (
                 <motion.div
-                  initial={{ opacity: 0, y: 10 }}
+                  initial={{ opacity: 0, y: 12 }}
                   animate={{ opacity: 1, y: 0 }}
-                  className="grid grid-cols-4 gap-2 pt-2"
+                  transition={{ duration: 0.25 }}
+                  className="space-y-2 pt-1"
                 >
-                  <button
-                    onClick={() => handleFlashcardRating(0)}
-                    className="py-2.5 px-2 bg-rose-950/40 hover:bg-rose-900/60 border border-rose-500/30 text-rose-300 rounded-xl text-xs font-medium text-center transition cursor-pointer active:scale-95"
-                  >
-                    <span className="block font-bold">Chưa nhớ</span>
-                    <span className="text-[10px] opacity-75">Gặp lại hôm nay</span>
-                  </button>
-                  <button
-                    onClick={() => handleFlashcardRating(1)}
-                    className="py-2.5 px-2 bg-amber-950/40 hover:bg-amber-900/60 border border-amber-500/30 text-amber-300 rounded-xl text-xs font-medium text-center transition cursor-pointer active:scale-95"
-                  >
-                    <span className="block font-bold">Hơi khó</span>
-                    <span className="text-[10px] opacity-75">Sau 1 ngày</span>
-                  </button>
-                  <button
-                    onClick={() => handleFlashcardRating(2)}
-                    className="py-2.5 px-2 bg-sky-950/40 hover:bg-sky-900/60 border border-sky-500/30 text-sky-300 rounded-xl text-xs font-medium text-center transition cursor-pointer active:scale-95"
-                  >
-                    <span className="block font-bold">Đã nhớ</span>
-                    <span className="text-[10px] opacity-75">Sau 3 ngày</span>
-                  </button>
-                  <button
-                    onClick={() => handleFlashcardRating(3)}
-                    className="py-2.5 px-2 bg-emerald-950/40 hover:bg-emerald-900/60 border border-emerald-500/30 text-emerald-300 rounded-xl text-xs font-medium text-center transition cursor-pointer active:scale-95"
-                  >
-                    <span className="block font-bold">Rất thuộc</span>
-                    <span className="text-[10px] opacity-75">Sau 6 ngày</span>
-                  </button>
+                  <div className="flex items-center justify-between px-1">
+                    <span className="text-[11px] font-bold text-slate-400 uppercase tracking-wider">
+                      Đánh giá mức độ thuộc (SRS):
+                    </span>
+                    <span className="text-[10px] text-slate-500 hidden sm:inline font-mono">
+                      Phím tắt 1 - 4
+                    </span>
+                  </div>
+
+                  <div className="grid grid-cols-2 sm:grid-cols-4 gap-2.5 sm:gap-3">
+                    {/* Rating 0: Chưa nhớ */}
+                    <button
+                      type="button"
+                      onClick={() => {
+                        if (typeof navigator !== 'undefined' && navigator.vibrate) navigator.vibrate([20, 20]);
+                        handleFlashcardRating(0);
+                      }}
+                      className="group py-3 px-3 bg-gradient-to-b from-rose-950/60 to-rose-950/90 hover:from-rose-900/70 hover:to-rose-900/95 active:scale-[0.98] border border-rose-500/40 hover:border-rose-400 text-rose-200 rounded-2xl flex flex-col items-center justify-center gap-1 transition shadow-lg shadow-rose-950/30 cursor-pointer min-h-[58px]"
+                    >
+                      <div className="flex items-center gap-1.5">
+                        <span className="w-2 h-2 rounded-full bg-rose-400 animate-pulse" />
+                        <span className="font-bold text-xs sm:text-sm text-rose-200">Chưa nhớ</span>
+                        <span className="text-[10px] hidden sm:inline font-mono opacity-60 bg-rose-900/60 px-1 rounded">1</span>
+                      </div>
+                      <span className="text-[11px] text-rose-300/80 font-medium">Gặp lại hôm nay</span>
+                    </button>
+
+                    {/* Rating 1: Hơi khó */}
+                    <button
+                      type="button"
+                      onClick={() => {
+                        if (typeof navigator !== 'undefined' && navigator.vibrate) navigator.vibrate(15);
+                        handleFlashcardRating(1);
+                      }}
+                      className="group py-3 px-3 bg-gradient-to-b from-amber-950/60 to-amber-950/90 hover:from-amber-900/70 hover:to-amber-900/95 active:scale-[0.98] border border-amber-500/40 hover:border-amber-400 text-amber-200 rounded-2xl flex flex-col items-center justify-center gap-1 transition shadow-lg shadow-amber-950/30 cursor-pointer min-h-[58px]"
+                    >
+                      <div className="flex items-center gap-1.5">
+                        <span className="w-2 h-2 rounded-full bg-amber-400" />
+                        <span className="font-bold text-xs sm:text-sm text-amber-200">Hơi khó</span>
+                        <span className="text-[10px] hidden sm:inline font-mono opacity-60 bg-amber-900/60 px-1 rounded">2</span>
+                      </div>
+                      <span className="text-[11px] text-amber-300/80 font-medium">Sau 1 ngày</span>
+                    </button>
+
+                    {/* Rating 2: Đã nhớ */}
+                    <button
+                      type="button"
+                      onClick={() => {
+                        if (typeof navigator !== 'undefined' && navigator.vibrate) navigator.vibrate(20);
+                        handleFlashcardRating(2);
+                      }}
+                      className="group py-3 px-3 bg-gradient-to-b from-sky-950/60 to-sky-950/90 hover:from-sky-900/70 hover:to-sky-900/95 active:scale-[0.98] border border-sky-500/40 hover:border-sky-400 text-sky-200 rounded-2xl flex flex-col items-center justify-center gap-1 transition shadow-lg shadow-sky-950/30 cursor-pointer min-h-[58px]"
+                    >
+                      <div className="flex items-center gap-1.5">
+                        <span className="w-2 h-2 rounded-full bg-sky-400" />
+                        <span className="font-bold text-xs sm:text-sm text-sky-200">Đã nhớ</span>
+                        <span className="text-[10px] hidden sm:inline font-mono opacity-60 bg-sky-900/60 px-1 rounded">3</span>
+                      </div>
+                      <span className="text-[11px] text-sky-300/80 font-medium">Sau 3 ngày</span>
+                    </button>
+
+                    {/* Rating 3: Rất thuộc */}
+                    <button
+                      type="button"
+                      onClick={() => {
+                        if (typeof navigator !== 'undefined' && navigator.vibrate) navigator.vibrate([20, 30]);
+                        handleFlashcardRating(3);
+                      }}
+                      className="group py-3 px-3 bg-gradient-to-b from-emerald-950/60 to-emerald-950/90 hover:from-emerald-900/70 hover:to-emerald-900/95 active:scale-[0.98] border border-emerald-500/40 hover:border-emerald-400 text-emerald-200 rounded-2xl flex flex-col items-center justify-center gap-1 transition shadow-lg shadow-emerald-950/30 cursor-pointer min-h-[58px]"
+                    >
+                      <div className="flex items-center gap-1.5">
+                        <span className="w-2 h-2 rounded-full bg-emerald-400" />
+                        <span className="font-bold text-xs sm:text-sm text-emerald-200">Rất thuộc</span>
+                        <span className="text-[10px] hidden sm:inline font-mono opacity-60 bg-emerald-900/60 px-1 rounded">4</span>
+                      </div>
+                      <span className="text-[11px] text-emerald-300/80 font-medium">Sau 6 ngày</span>
+                    </button>
+                  </div>
                 </motion.div>
               )}
             </div>
@@ -797,9 +1112,7 @@ export const StudySession: React.FC<StudySessionProps> = ({
               <StrokeWriterCanvas
                 hanzi={currentQ.character.hanzi}
                 pinyin={showPinyin ? currentQ.character.pinyin : undefined}
-                size={220}
               />
-              <p className="text-xs text-slate-400">Dùng chuột hoặc ngón tay vẽ nét chữ lên ô Mễ tự cách ở trên.</p>
               <div className="flex items-center justify-center gap-3 flex-wrap">
                 <button
                   onClick={() => onOpenCharacterDetail(currentQ.character)}
