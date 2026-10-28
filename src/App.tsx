@@ -24,6 +24,9 @@ import {
   Cloud,
   RefreshCw,
   CheckCircle2,
+  AlertTriangle,
+  ExternalLink,
+  X,
 } from 'lucide-react';
 import { User } from 'firebase/auth';
 import { Character, WordList, UserStats, StudySessionMode } from './types';
@@ -197,6 +200,15 @@ export default function App() {
     }
   };
 
+  const [authHelpModal, setAuthHelpModal] = useState<{
+    title: string;
+    description: string;
+    code?: string;
+    steps?: string[];
+    actionUrl?: string;
+    actionLabel?: string;
+  } | null>(null);
+
   const handleSignInGoogle = async () => {
     try {
       setSyncToast({ message: 'Đang mở cửa sổ đăng nhập Google...', type: 'info' });
@@ -206,8 +218,55 @@ export default function App() {
       }
     } catch (err: any) {
       console.error('Google Sign-in failed:', err);
-      setSyncToast({ message: 'Đăng nhập Google thất bại hoặc đã bị đóng.', type: 'error' });
-      setTimeout(() => setSyncToast(null), 3500);
+      const errCode = err?.code || '';
+      
+      if (errCode === 'auth/unauthorized-domain') {
+        setSyncToast({
+          message: 'Tên miền chưa được cấp phép trong Firebase! Đang mở hướng dẫn...',
+          type: 'error',
+        });
+        setAuthHelpModal({
+          title: 'Tên miền chưa được cấp phép (Authorized Domain)',
+          description:
+            'Firebase Authentication có tính năng bảo mật chỉ cho phép đăng nhập từ các tên miền đã đăng ký. Tên miền GitHub Pages của bạn chưa nằm trong danh sách này.',
+          code: window.location.hostname || 'laphuc227-kyle.github.io',
+          steps: [
+            'Bước 1: Mở Firebase Console -> Authentication -> mục "Settings".',
+            'Bước 2: Tìm phần "Authorized domains" và bấm nút "Add domain".',
+            'Bước 3: Nhập đúng tên miền: ' + (window.location.hostname || 'laphuc227-kyle.github.io') + ' rồi bấm "Save".',
+            'Bước 4: Tải lại trang web và bấm "Đăng nhập Google" lại là hoàn tất!',
+          ],
+          actionUrl: 'https://console.firebase.google.com/project/platinum-elixir-3bcxw/authentication/settings',
+          actionLabel: 'Mở Cài đặt Firebase Console',
+        });
+      } else if (errCode === 'auth/popup-blocked') {
+        setSyncToast({
+          message: 'Cửa sổ đăng nhập bị trình duyệt chặn (Pop-up blocked).',
+          type: 'error',
+        });
+        setAuthHelpModal({
+          title: 'Cửa sổ đăng nhập bị chặn (Pop-up Blocked)',
+          description:
+            'Trình duyệt trên iPhone (Safari) hoặc chế độ duyệt web riêng tư đã tự động chặn cửa sổ đăng nhập pop-up của Google.',
+          steps: [
+            'Vào Cài đặt (Settings) trên iPhone -> cuộn xuống chọn Safari.',
+            'Tìm mục "Chặn cửa sổ bật lên" (Block Pop-ups) và TẮT tính năng này.',
+            'Nếu bạn mở web trong ứng dụng (Zalo, Facebook, Messenger), hãy chọn "Mở bằng trình duyệt Safari" bên góc trên bên phải.',
+            'Quay lại ứng dụng và bấm lại nút Đăng nhập Google.',
+          ],
+        });
+      } else if (errCode === 'auth/popup-closed-by-user') {
+        setSyncToast({
+          message: 'Cửa sổ đăng nhập đã bị đóng trước khi hoàn tất.',
+          type: 'info',
+        });
+      } else {
+        setSyncToast({
+          message: `Lỗi đăng nhập: ${err?.message || 'Không thể đăng nhập Google.'}`,
+          type: 'error',
+        });
+      }
+      setTimeout(() => setSyncToast(null), 4000);
     }
   };
 
@@ -614,6 +673,94 @@ export default function App() {
             onClose={() => setIsSetupModalOpen(false)}
             onConfirmStart={handleConfirmStartStudy}
           />
+        )}
+      </AnimatePresence>
+
+      {/* Firebase Auth Help / Domain Authorization Guidance Modal */}
+      <AnimatePresence>
+        {authHelpModal && (
+          <div className="fixed inset-0 z-50 flex items-center justify-center p-4 bg-slate-950/80 backdrop-blur-md">
+            <motion.div
+              initial={{ opacity: 0, scale: 0.94, y: 12 }}
+              animate={{ opacity: 1, scale: 1, y: 0 }}
+              exit={{ opacity: 0, scale: 0.94, y: 12 }}
+              className="relative w-full max-w-lg bg-slate-900 border border-amber-500/30 rounded-2xl p-6 shadow-2xl text-left overflow-hidden"
+            >
+              <div className="flex items-start justify-between gap-3 mb-4">
+                <div className="flex items-center gap-3">
+                  <div className="p-2.5 rounded-xl bg-amber-500/15 text-amber-400 border border-amber-500/30">
+                    <AlertTriangle className="w-5 h-5" />
+                  </div>
+                  <div>
+                    <h3 className="text-base font-bold text-slate-100">{authHelpModal.title}</h3>
+                    <p className="text-xs text-amber-400/90 font-medium">Bảo mật Firebase Authentication</p>
+                  </div>
+                </div>
+                <button
+                  onClick={() => setAuthHelpModal(null)}
+                  className="p-1.5 text-slate-400 hover:text-slate-200 rounded-lg hover:bg-slate-800 transition cursor-pointer"
+                >
+                  <X className="w-4 h-4" />
+                </button>
+              </div>
+
+              <p className="text-xs text-slate-300 leading-relaxed mb-4">
+                {authHelpModal.description}
+              </p>
+
+              {authHelpModal.code && (
+                <div className="mb-4 p-3 bg-slate-950 rounded-xl border border-slate-800 flex items-center justify-between">
+                  <div className="min-w-0">
+                    <p className="text-[10px] text-slate-400 font-medium uppercase tracking-wider mb-0.5">Tên miền cần thêm</p>
+                    <code className="text-xs font-mono font-bold text-emerald-400 break-all">{authHelpModal.code}</code>
+                  </div>
+                  <button
+                    onClick={() => {
+                      navigator.clipboard?.writeText(authHelpModal.code || '');
+                      setSyncToast({ message: 'Đã sao chép tên miền vào bộ nhớ tạm!', type: 'success' });
+                    }}
+                    className="shrink-0 ml-3 px-2.5 py-1 text-xs bg-slate-800 hover:bg-slate-700 text-slate-200 font-medium rounded-lg border border-slate-700 transition cursor-pointer active:scale-95"
+                  >
+                    Sao chép
+                  </button>
+                </div>
+              )}
+
+              {authHelpModal.steps && (
+                <div className="mb-5 space-y-2 bg-slate-800/40 p-3.5 rounded-xl border border-slate-800">
+                  <p className="text-[11px] font-bold text-slate-200 uppercase tracking-wide">Các bước thực hiện nhanh:</p>
+                  <ul className="space-y-1.5">
+                    {authHelpModal.steps.map((step, idx) => (
+                      <li key={idx} className="text-xs text-slate-300 leading-snug flex items-start gap-2">
+                        <span className="text-emerald-400 font-bold mt-0.5">•</span>
+                        <span>{step}</span>
+                      </li>
+                    ))}
+                  </ul>
+                </div>
+              )}
+
+              <div className="flex flex-col sm:flex-row items-center justify-end gap-2.5 pt-2 border-t border-slate-800">
+                {authHelpModal.actionUrl && (
+                  <a
+                    href={authHelpModal.actionUrl}
+                    target="_blank"
+                    rel="noopener noreferrer"
+                    className="w-full sm:w-auto px-4 py-2 bg-gradient-to-r from-amber-500 to-orange-500 hover:from-amber-400 hover:to-orange-400 text-slate-950 text-xs font-bold rounded-xl flex items-center justify-center gap-1.5 shadow-lg shadow-amber-500/20 transition cursor-pointer active:scale-95"
+                  >
+                    <span>{authHelpModal.actionLabel || 'Mở trang cài đặt'}</span>
+                    <ExternalLink className="w-3.5 h-3.5" />
+                  </a>
+                )}
+                <button
+                  onClick={() => setAuthHelpModal(null)}
+                  className="w-full sm:w-auto px-4 py-2 bg-slate-800 hover:bg-slate-700 text-slate-200 text-xs font-semibold rounded-xl border border-slate-700 transition cursor-pointer active:scale-95"
+                >
+                  Đóng
+                </button>
+              </div>
+            </motion.div>
+          </div>
         )}
       </AnimatePresence>
     </div>
