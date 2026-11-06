@@ -126,10 +126,22 @@ export const StudySession: React.FC<StudySessionProps> = ({
       targetCount > 0 ? targetCount : 20
     );
 
+    const isFlashcardOnly = mode === 'quick_flashcard';
+
     const generatedQuestions: QuizQuestion[] = selectedChars.map((char) => {
-      let forcedType: QuestionType | undefined = undefined;
-      if (mode === 'quick_flashcard') forcedType = 'flashcard';
-      return generateQuestionForCharacter(char, allCharacters, forcedType);
+      if (isFlashcardOnly) {
+        const qId = `fc_${char.id}_${Date.now()}_${Math.random().toString(36).substring(2, 7)}`;
+        return {
+          id: qId,
+          type: 'flashcard' as QuestionType,
+          character: char,
+          prompt: `Lật thẻ ghi nhớ`,
+          subtitle: `Bộ thủ: ${char.radical || 'Chưa rõ'} | Số nét: ${char.strokeCount || char.hanzi.length}`,
+          correctAnswer: char.hanzi,
+          explanation: `${char.hanzi} [${char.pinyin}] - ${char.hanViet}: ${char.meaning}`,
+        };
+      }
+      return generateQuestionForCharacter(char, allCharacters);
     });
 
     setQuestions(generatedQuestions);
@@ -169,7 +181,7 @@ export const StudySession: React.FC<StudySessionProps> = ({
         return;
       }
 
-      if (currentQ?.type === 'flashcard') {
+      if (mode === 'quick_flashcard' || currentQ?.type === 'flashcard') {
         if (e.code === 'Space' || e.key === ' ') {
           e.preventDefault();
           handleFlipCard();
@@ -757,7 +769,7 @@ export const StudySession: React.FC<StudySessionProps> = ({
         </div>
 
         <div className="flex items-center flex-wrap gap-1.5 sm:gap-2">
-          {currentQ.type === 'flashcard' && (
+          {(mode === 'quick_flashcard' || currentQ.type === 'flashcard') && (
             <button
               type="button"
               onClick={() => setAutoPlayAudio(!autoPlayAudio)}
@@ -866,7 +878,7 @@ export const StudySession: React.FC<StudySessionProps> = ({
           </div>
 
           {/* Question Type: Flashcard Mode with 3D Flip & Mobile Touch Gestures */}
-          {currentQ.type === 'flashcard' ? (
+          {mode === 'quick_flashcard' || currentQ.type === 'flashcard' ? (
             <div className="space-y-5">
               <div
                 className="relative w-full max-w-xl mx-auto select-none"

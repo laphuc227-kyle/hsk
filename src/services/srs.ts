@@ -244,8 +244,17 @@ export function selectCharactersForSession(
       });
       break;
 
-    case 'sentence_cloze':
     case 'quick_flashcard':
+      pool.sort((a, b) => {
+        const isDueA = a.srs.nextReviewDate <= now ? 60 : 0;
+        const isDueB = b.srs.nextReviewDate <= now ? 60 : 0;
+        const scoreA = isDueA + (100 - a.srs.masteryLevel) + Math.random() * 15;
+        const scoreB = isDueB + (100 - b.srs.masteryLevel) + Math.random() * 15;
+        return scoreB - scoreA;
+      });
+      break;
+
+    case 'sentence_cloze':
     case 'random_test':
     default:
       pool.sort(() => Math.random() - 0.5);

@@ -129,6 +129,8 @@ export const StudySetupModal: React.FC<StudySetupModalProps> = ({
     if (selectedSource === 'all_compound') {
       if (initialMode === 'sentence_cloze') {
         finalMode = 'sentence_cloze';
+      } else if (initialMode === 'quick_flashcard') {
+        finalMode = 'quick_flashcard';
       } else if (compoundType === 'compound_review') {
         finalMode = 'compound_words';
       } else {

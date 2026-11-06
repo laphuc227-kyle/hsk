@@ -502,7 +502,7 @@ export default function App() {
 
           {activeView === 'study' && (
             <motion.div
-              key="study"
+              key={`study_${studyMode}_${selectedListId || 'all'}`}
               variants={pageVariants}
               initial="initial"
               animate="animate"
@@ -511,6 +511,7 @@ export default function App() {
               className="w-full"
             >
               <StudySession
+                key={`session_${studyMode}_${selectedListId || 'all'}`}
                 mode={studyMode}
                 allCharacters={characters}
                 selectedListId={selectedListId || undefined}
