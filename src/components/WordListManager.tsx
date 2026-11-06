@@ -1,6 +1,6 @@
-import React, { useState } from 'react';
+import React, { useState, useMemo } from 'react';
 import { motion, AnimatePresence } from 'motion/react';
-import { Plus, Trash2, Search, Sparkles, BookOpen, Layers, Volume2, Edit, Loader2, ListPlus, FileText, CheckCircle2, Target, Zap, Flame, GraduationCap, Download, Copy, Check, FileSpreadsheet, Share2, Combine, ArrowRight, FileQuestion } from 'lucide-react';
+import { Plus, Trash2, Search, Sparkles, BookOpen, Layers, Volume2, Edit, Loader2, ListPlus, FileText, CheckCircle2, Target, Zap, Flame, GraduationCap, Download, Copy, Check, FileSpreadsheet, Share2, Combine, ArrowRight, FileQuestion, X } from 'lucide-react';
 import { Character, WordList, StudySessionMode } from '../types';
 import { addCharacter, removeCharacter, saveWordLists, saveCharacters } from '../services/storage';
 import { DEFAULT_SRS } from '../services/dictionary';
@@ -9,6 +9,7 @@ import { detectCompoundWordsFromCharacters, convertCompoundToCharacter, Detected
 import { autoCategorizeCharacters } from '../services/hskClassifier';
 import { lookupBuiltIn } from '../services/builtInDictionary';
 import { getApiUrl, isStaticHost } from '../services/apiClient';
+import { filterAndRankCharacters, stripAccents, SmartSearchConstituent } from '../services/smartSearch';
 
 interface WordListManagerProps {
   characters: Character[];
@@ -104,15 +105,29 @@ export const WordListManager: React.FC<WordListManagerProps> = ({
       ? expansionCompounds
       : detectedCompounds;
 
-  const filteredCompoundList = activeCompoundList.filter((dc) => {
-    if (!searchTerm) return true;
-    return (
-      dc.word.includes(searchTerm) ||
-      dc.pinyin.toLowerCase().includes(searchTerm.toLowerCase()) ||
-      dc.meaning.toLowerCase().includes(searchTerm.toLowerCase()) ||
-      (dc.hanViet && dc.hanViet.toLowerCase().includes(searchTerm.toLowerCase()))
-    );
-  });
+  const filteredCompoundList = useMemo(() => {
+    const trimmed = searchTerm.trim();
+    if (!trimmed) return activeCompoundList;
+    const strippedQ = stripAccents(trimmed);
+    const lowerQ = trimmed.toLowerCase();
+
+    return activeCompoundList.filter((dc) => {
+      const matchWord = dc.word.includes(trimmed);
+      const matchPinyin =
+        dc.pinyin.toLowerCase().includes(lowerQ) ||
+        stripAccents(dc.pinyin).includes(strippedQ);
+      const matchMeaning =
+        dc.meaning.toLowerCase().includes(lowerQ) ||
+        stripAccents(dc.meaning).includes(strippedQ);
+      const matchHanViet =
+        (dc.hanViet && dc.hanViet.toLowerCase().includes(lowerQ)) ||
+        (dc.hanViet && stripAccents(dc.hanViet).includes(strippedQ));
+      const matchConstituent = dc.constituents.some(
+        (c) => c.char === trimmed || (c.meaning && stripAccents(c.meaning).includes(strippedQ))
+      );
+      return matchWord || matchPinyin || matchMeaning || matchHanViet || matchConstituent;
+    });
+  }, [activeCompoundList, searchTerm]);
 
   const handleSaveDetectedCompound = (dc: DetectedCompoundWord) => {
     const listTarget = selectedListId && !['all_single', 'all_compound'].includes(selectedListId)
@@ -129,24 +144,47 @@ export const WordListManager: React.FC<WordListManagerProps> = ({
     onRefreshData();
   };
 
-  // Filter characters by wordTypeFilter and searchTerm
+  // Smart Filter and Rank characters by wordTypeFilter and searchTerm
   const activeList = wordLists.find((l) => l.id === selectedListId);
 
-  const filteredCharacters = scopeCharacters.filter((c) => {
-    const matchesType =
-      wordTypeFilter === 'all'
-        ? true
-        : wordTypeFilter === 'single'
-        ? c.hanzi.length === 1
-        : c.hanzi.length > 1;
-    const matchesSearch =
-      !searchTerm ||
-      c.hanzi.includes(searchTerm) ||
-      c.pinyin.toLowerCase().includes(searchTerm.toLowerCase()) ||
-      c.meaning.toLowerCase().includes(searchTerm.toLowerCase()) ||
-      c.hanViet.toLowerCase().includes(searchTerm.toLowerCase());
-    return matchesType && matchesSearch;
-  });
+  const { filtered: filteredCharacters, analysis: searchAnalysis } = useMemo(() => {
+    return filterAndRankCharacters(scopeCharacters, characters, searchTerm, wordTypeFilter);
+  }, [scopeCharacters, characters, searchTerm, wordTypeFilter]);
+
+  // Handler to add a missing constituent single character into user vocabulary in 1 click
+  const handleAddMissingConstituent = (item: SmartSearchConstituent) => {
+    const info = item.fallbackInfo;
+    const listTarget = selectedListId && !['all_single', 'all_compound'].includes(selectedListId)
+      ? [selectedListId]
+      : ['hsk1'];
+
+    const newChar: Character = {
+      id: `c_${Date.now()}_${Math.random().toString(36).substring(2, 7)}`,
+      hanzi: item.char,
+      pinyin: info?.pinyin || '',
+      hanViet: info?.hanViet || '',
+      meaning: info?.meaning || `Chữ đơn cấu thành trong từ ghép "${item.sourceCompound}"`,
+      radical: info?.radical || 'Chữ đơn',
+      strokeCount: info?.strokeCount || 5,
+      components: info?.components || '',
+      mnemonic: info?.mnemonic || `Chữ đơn cấu thành trong từ ghép "${item.sourceCompound}".`,
+      customNotes: `Tự động thêm từ tính năng phân tích từ ghép "${item.sourceCompound}".`,
+      examples: [],
+      compoundWords: [
+        {
+          word: item.sourceCompound,
+          pinyin: info?.pinyin || '',
+          meaning: `Trong từ ghép "${item.sourceCompound}"`,
+        },
+      ],
+      listIds: listTarget,
+      createdAt: Date.now(),
+      srs: { ...DEFAULT_SRS },
+    };
+
+    addCharacter(newChar);
+    onRefreshData();
+  };
 
   const singleCount = scopeCharacters.filter((c) => c.hanzi.length === 1).length;
   const compoundCount = characters.filter((c) => c.hanzi.length > 1).length;
@@ -839,16 +877,119 @@ export const WordListManager: React.FC<WordListManagerProps> = ({
         </div>
       )}
 
-      {/* Search Input */}
-      <div className="relative">
-        <Search className="w-4 h-4 text-slate-500 absolute left-3.5 top-1/2 -translate-y-1/2" />
-        <input
-          type="text"
-          value={searchTerm}
-          onChange={(e) => setSearchTerm(e.target.value)}
-          placeholder="Tìm theo chữ Hán, Pinyin, Hán Việt hoặc Nghĩa..."
-          className="w-full text-xs pl-10 pr-4 py-2.5 bg-slate-900/90 text-slate-100 border border-slate-800 rounded-xl focus:outline-hidden focus:border-cyan-500/60 focus:ring-2 focus:ring-cyan-500/20 placeholder:text-slate-500 transition"
-        />
+      {/* Search Input with Clear Button & Smart Indicator */}
+      <div className="space-y-2.5">
+        <div className="relative">
+          <Search className="w-4 h-4 text-slate-500 absolute left-3.5 top-1/2 -translate-y-1/2" />
+          <input
+            type="text"
+            value={searchTerm}
+            onChange={(e) => setSearchTerm(e.target.value)}
+            placeholder="Tìm chữ Hán, từ ghép, Pinyin hoặc Nghĩa (tự động phân tích kèm chữ đơn cấu thành)..."
+            className="w-full text-xs pl-10 pr-9 py-2.5 bg-slate-900/90 text-slate-100 border border-slate-800 rounded-xl focus:outline-hidden focus:border-cyan-500/60 focus:ring-2 focus:ring-cyan-500/20 placeholder:text-slate-500 transition shadow-inner"
+          />
+          {searchTerm && (
+            <button
+              type="button"
+              onClick={() => setSearchTerm('')}
+              className="absolute right-3 top-1/2 -translate-y-1/2 p-1 text-slate-400 hover:text-slate-200 bg-slate-800/80 hover:bg-slate-700 rounded-lg transition cursor-pointer"
+              title="Xóa tìm kiếm"
+            >
+              <X className="w-3.5 h-3.5" />
+            </button>
+          )}
+        </div>
+
+        {/* Smart Search Breakdown Banner */}
+        {searchAnalysis.hasQuery && searchAnalysis.matchedCompounds.length > 0 && (
+          <div className="bg-gradient-to-r from-slate-900 via-slate-900/90 to-cyan-950/20 border border-cyan-500/30 rounded-2xl p-3.5 space-y-2.5 shadow-lg shadow-cyan-950/20">
+            <div className="flex flex-wrap items-center justify-between gap-2">
+              <div className="flex items-center gap-2">
+                <span className="p-1 rounded-lg bg-cyan-500/20 text-cyan-300">
+                  <Sparkles className="w-3.5 h-3.5 text-cyan-400" />
+                </span>
+                <span className="text-xs font-bold text-slate-200">
+                  Phát hiện từ ghép liên quan:
+                </span>
+                <div className="flex flex-wrap items-center gap-1.5">
+                  {searchAnalysis.matchedCompounds.map((comp) => (
+                    <span
+                      key={comp.word}
+                      className="inline-flex items-center gap-1 text-xs font-serif font-bold text-cyan-300 bg-cyan-950/80 px-2 py-0.5 rounded-lg border border-cyan-500/30 shadow-xs"
+                      title={`${comp.word} (${comp.pinyin}): ${comp.meaning}`}
+                    >
+                      <span>{comp.word}</span>
+                      {comp.pinyin && <span className="text-[10px] font-mono text-cyan-400/80 font-normal">({comp.pinyin})</span>}
+                    </span>
+                  ))}
+                </div>
+              </div>
+
+              <span className="text-[11px] font-medium text-emerald-400 flex items-center gap-1">
+                <CheckCircle2 className="w-3.5 h-3.5" />
+                Đang hiển thị cả từ ghép & các chữ đơn cấu thành
+              </span>
+            </div>
+
+            {/* Constituents single characters row */}
+            <div className="flex flex-wrap items-center gap-2 pt-2 border-t border-slate-800/80">
+              <span className="text-[11px] font-semibold text-slate-400 flex items-center gap-1">
+                <Layers className="w-3 h-3 text-cyan-400" />
+                Chữ đơn cấu thành:
+              </span>
+
+              {searchAnalysis.constituents.map((item) => {
+                if (item.inUserVocabulary && item.character) {
+                  return (
+                    <button
+                      key={item.char}
+                      type="button"
+                      onClick={() => onSelectCharacter(item.character!)}
+                      className="group/chip inline-flex items-center gap-1.5 bg-slate-800/90 hover:bg-cyan-950/80 border border-slate-700/80 hover:border-cyan-500/50 px-2.5 py-1 rounded-xl transition cursor-pointer text-left shadow-xs"
+                      title={`Xem chi tiết chữ đơn ${item.char}`}
+                    >
+                      <span className="text-base font-serif font-bold text-slate-100 group-hover/chip:text-cyan-300">
+                        {item.char}
+                      </span>
+                      <div className="flex flex-col text-[10px] leading-tight">
+                        <span className="font-mono text-cyan-400 font-semibold">{item.character.pinyin}</span>
+                        <span className="text-slate-400 line-clamp-1 max-w-[100px]">{item.character.meaning}</span>
+                      </div>
+                      <span className="text-[9px] font-bold px-1.5 py-0.2 rounded-md bg-emerald-500/10 text-emerald-400 border border-emerald-500/20 ml-1">
+                        ✓ Trong từ vựng
+                      </span>
+                    </button>
+                  );
+                }
+
+                // Not in vocabulary yet: give 1-click add button
+                return (
+                  <div
+                    key={item.char}
+                    className="inline-flex items-center gap-1.5 bg-slate-900/90 border border-amber-500/30 px-2.5 py-1 rounded-xl shadow-xs"
+                  >
+                    <span className="text-base font-serif font-bold text-amber-200">
+                      {item.char}
+                    </span>
+                    <div className="flex flex-col text-[10px] leading-tight">
+                      <span className="font-mono text-amber-300 font-semibold">{item.fallbackInfo?.pinyin || 'chữ mới'}</span>
+                      <span className="text-slate-400 line-clamp-1 max-w-[120px]">{item.fallbackInfo?.meaning || `Chữ trong "${item.sourceCompound}"`}</span>
+                    </div>
+                    <button
+                      type="button"
+                      onClick={() => handleAddMissingConstituent(item)}
+                      className="text-[10px] font-bold px-2 py-0.5 rounded-lg bg-amber-400 hover:bg-amber-300 text-slate-950 transition cursor-pointer flex items-center gap-0.5 ml-1 shadow-xs"
+                      title={`Lưu chữ đơn ${item.char} vào từ vựng`}
+                    >
+                      <Plus className="w-3 h-3 stroke-[3]" />
+                      <span>Thêm chữ này</span>
+                    </button>
+                  </div>
+                );
+              })}
+            </div>
+          </div>
+        )}
       </div>
 
       {/* Cards Grid */}
@@ -1029,11 +1170,21 @@ export const WordListManager: React.FC<WordListManagerProps> = ({
                   </div>
 
                   <div className="text-center py-1">
-                    {char.hanzi.length > 1 && (
+                    {searchAnalysis.hasQuery && searchAnalysis.isConstituent(char.hanzi) ? (
+                      <span className="inline-flex items-center gap-1 text-[10px] font-bold px-2 py-0.5 rounded-full bg-cyan-500/20 text-cyan-300 border border-cyan-500/40 mb-1.5 shadow-xs">
+                        <Sparkles className="w-2.5 h-2.5 text-cyan-400" />
+                        Chữ đơn trong [{searchAnalysis.getSourceCompound(char.hanzi)}]
+                      </span>
+                    ) : searchAnalysis.hasQuery && searchAnalysis.matchedCompounds.some((m) => m.word === char.hanzi) ? (
+                      <span className="inline-flex items-center gap-1 text-[10px] font-bold px-2 py-0.5 rounded-full bg-amber-500/20 text-amber-300 border border-amber-500/40 mb-1.5 shadow-xs">
+                        <Combine className="w-2.5 h-2.5 text-amber-400" />
+                        Từ ghép đang tìm
+                      </span>
+                    ) : char.hanzi.length > 1 ? (
                       <span className="inline-block text-[10px] font-bold px-2 py-0.5 rounded-full bg-amber-500/20 text-amber-300 border border-amber-500/30 mb-1.5 shadow-xs">
                         {char.radical === 'Từ ghép mở rộng' ? 'Từ ghép mở rộng' : 'Từ ghép ôn tập'}
                       </span>
-                    )}
+                    ) : null}
                     <div className={`font-serif font-bold text-slate-100 group-hover:text-emerald-300 group-hover:scale-105 transition-all ${char.hanzi.length > 2 ? 'text-2xl' : 'text-3xl'}`}>
                       {char.hanzi}
                     </div>

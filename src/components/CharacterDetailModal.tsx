@@ -296,6 +296,50 @@ export const CharacterDetailModal: React.FC<CharacterDetailModalProps> = ({
             </div>
           )}
 
+          {/* Constituent Single Characters for Compound Words */}
+          {character.hanzi.length > 1 && (
+            <div className="space-y-2">
+              <h4 className="text-xs font-bold text-slate-400 uppercase tracking-wider flex items-center gap-1.5 font-mono">
+                <Layers className="w-3.5 h-3.5 text-cyan-400" />
+                Chữ Đơn Cấu Thành Từ Ghép Này
+              </h4>
+              <div className="grid grid-cols-1 sm:grid-cols-2 gap-2.5">
+                {character.hanzi.split('').map((ch: string, idx: number) => {
+                  const dict = lookupBuiltIn(ch);
+                  return (
+                    <div
+                      key={idx}
+                      className="p-3 bg-slate-950/80 border border-cyan-500/20 rounded-xl flex items-center justify-between gap-3 shadow-inner"
+                    >
+                      <div className="flex items-center gap-3">
+                        <span className="text-3xl font-serif font-bold text-cyan-300">{ch}</span>
+                        <div>
+                          <div className="flex items-center gap-1.5">
+                            <span className="text-xs font-mono font-bold text-cyan-400">{dict?.pinyin || ''}</span>
+                            {dict?.hanViet && (
+                              <span className="text-[10px] font-bold text-teal-300 bg-teal-950/60 px-1.5 py-0.2 rounded border border-teal-500/30 uppercase">
+                                {dict.hanViet}
+                              </span>
+                            )}
+                          </div>
+                          <p className="text-xs text-slate-300 line-clamp-1">{dict?.meaning || 'Chữ đơn cấu thành'}</p>
+                        </div>
+                      </div>
+                      <button
+                        type="button"
+                        onClick={() => speakChinese(ch)}
+                        className="p-1.5 text-slate-400 hover:text-cyan-300 bg-slate-900 rounded-lg border border-slate-800 transition cursor-pointer"
+                        title="Phát âm chữ đơn này"
+                      >
+                        <Volume2 className="w-3.5 h-3.5" />
+                      </button>
+                    </div>
+                  );
+                })}
+              </div>
+            </div>
+          )}
+
           {/* Mnemonic Story */}
           <div className="space-y-2">
             <div className="flex items-center justify-between">
