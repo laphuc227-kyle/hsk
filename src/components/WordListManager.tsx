@@ -10,6 +10,7 @@ import { autoCategorizeCharacters } from '../services/hskClassifier';
 import { lookupBuiltIn } from '../services/builtInDictionary';
 import { getApiUrl, isStaticHost } from '../services/apiClient';
 import { filterAndRankCharacters, stripAccents, SmartSearchConstituent } from '../services/smartSearch';
+import { findRadicalInfo } from '../services/radicalsDatabase';
 
 interface WordListManagerProps {
   characters: Character[];
@@ -1144,7 +1145,12 @@ export const WordListManager: React.FC<WordListManagerProps> = ({
                 >
                   <div className="flex items-center justify-between text-[10px] text-slate-400 mb-1">
                     <span className="font-mono bg-slate-800/80 px-1.5 py-0.5 rounded text-slate-300">
-                      {char.hanzi.length > 1 ? `${char.strokeCount || 2} nét` : char.radical}
+                      {char.hanzi.length > 1
+                        ? `${char.strokeCount || 2} nét`
+                        : (() => {
+                            const r = findRadicalInfo(char.radical);
+                            return r ? `${r.variants[0] || r.hanzi} ${r.hanViet}` : char.radical;
+                          })()}
                     </span>
                     <div className="flex items-center gap-1.5">
                       <span

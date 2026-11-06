@@ -12,6 +12,7 @@ import { CharacterDetailModal } from './components/CharacterDetailModal';
 import { AITutorDrawer } from './components/AITutorDrawer';
 import { AnalyticsView } from './components/AnalyticsView';
 import { GrammarView } from './components/GrammarView';
+import { RadicalsView } from './components/RadicalsView';
 import { SettingsModal } from './components/SettingsModal';
 import { StudySetupModal } from './components/StudySetupModal';
 import {
@@ -73,13 +74,14 @@ export default function App() {
   const [syncToast, setSyncToast] = useState<{ message: string; type: 'success' | 'error' | 'info' } | null>(null);
 
   // UI State
-  const [activeView, setActiveView] = useState<'lists' | 'study' | 'analytics' | 'grammar'>('lists');
+  const [activeView, setActiveView] = useState<'lists' | 'study' | 'analytics' | 'grammar' | 'radicals'>('lists');
   const [studyMode, setStudyMode] = useState<StudySessionMode>('smart_daily');
   const [selectedListId, setSelectedListId] = useState<string | null>(null);
   const [isMobileMenuOpen, setIsMobileMenuOpen] = useState(false);
 
   // Modals / Drawers
   const [selectedCharacter, setSelectedCharacter] = useState<Character | null>(null);
+  const [focusedRadicalId, setFocusedRadicalId] = useState<string | null>(null);
   const [isTutorOpen, setIsTutorOpen] = useState(false);
   const [tutorContextHanzi, setTutorContextHanzi] = useState<string | undefined>(undefined);
   const [isSettingsOpen, setIsSettingsOpen] = useState(false);
@@ -458,6 +460,10 @@ export default function App() {
         onOpenTutor={() => handleOpenTutorForHanzi()}
         onOpenAnalytics={() => setActiveView('analytics')}
         onOpenGrammar={() => setActiveView('grammar')}
+        onOpenRadicals={() => {
+          setFocusedRadicalId(null);
+          setActiveView('radicals');
+        }}
         onOpenSettings={() => setIsSettingsOpen(true)}
         onSelectList={handleSelectList}
         isOpenOnMobile={isMobileMenuOpen}
@@ -556,6 +562,26 @@ export default function App() {
               />
             </motion.div>
           )}
+
+          {activeView === 'radicals' && (
+            <motion.div
+              key="radicals"
+              variants={pageVariants}
+              initial="initial"
+              animate="animate"
+              exit="exit"
+              transition={pageTransition}
+              className="w-full"
+            >
+              <RadicalsView
+                characters={characters}
+                initialRadicalId={focusedRadicalId}
+                onClearInitialRadical={() => setFocusedRadicalId(null)}
+                onSelectCharacter={(char) => setSelectedCharacter(char)}
+                onOpenTutor={(context) => handleOpenTutorForHanzi(context)}
+              />
+            </motion.div>
+          )}
         </AnimatePresence>
       </main>
 
@@ -630,6 +656,10 @@ export default function App() {
             onDeleteCharacter={(id) => {
               removeCharacter(id);
               refreshAllData();
+            }}
+            onOpenRadicalView={(radId) => {
+              setFocusedRadicalId(radId);
+              setActiveView('radicals');
             }}
           />
         )}

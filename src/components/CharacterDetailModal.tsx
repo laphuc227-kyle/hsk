@@ -1,12 +1,13 @@
 import React, { useState } from 'react';
 import { motion } from 'motion/react';
-import { X, Volume2, Sparkles, BookOpen, Layers, Edit3, Check, Loader2, ListPlus, Trash2, RefreshCw } from 'lucide-react';
+import { X, Volume2, Sparkles, BookOpen, Layers, Edit3, Check, Loader2, ListPlus, Trash2, RefreshCw, ArrowRight } from 'lucide-react';
 import { Character } from '../types';
 import { StrokeWriterCanvas } from './StrokeWriterCanvas';
 import { speakChinese } from '../services/audio';
 import { addCharacter, removeCharacter } from '../services/storage';
 import { lookupBuiltIn } from '../services/builtInDictionary';
 import { getApiUrl, isStaticHost } from '../services/apiClient';
+import { findRadicalInfo } from '../services/radicalsDatabase';
 
 interface CharacterDetailModalProps {
   character: Character | null;
@@ -14,6 +15,7 @@ interface CharacterDetailModalProps {
   onUpdateCharacter?: (updated?: Character) => void;
   onOpenTutor?: (hanzi: string) => void;
   onDeleteCharacter?: (id: string) => void;
+  onOpenRadicalView?: (radicalId: string) => void;
 }
 
 export const CharacterDetailModal: React.FC<CharacterDetailModalProps> = ({
@@ -22,6 +24,7 @@ export const CharacterDetailModal: React.FC<CharacterDetailModalProps> = ({
   onUpdateCharacter,
   onOpenTutor,
   onDeleteCharacter,
+  onOpenRadicalView,
 }) => {
   if (!character) return null;
 
@@ -33,6 +36,8 @@ export const CharacterDetailModal: React.FC<CharacterDetailModalProps> = ({
   const [confirmingDelete, setConfirmingDelete] = useState(false);
   const [isRefreshingDetails, setIsRefreshingDetails] = useState(false);
   const [refreshSuccessMessage, setRefreshSuccessMessage] = useState('');
+
+  const radicalInfo = findRadicalInfo(character.radical) || (character.hanzi.length === 1 ? findRadicalInfo(character.hanzi) : null);
 
   const isDataIncomplete =
     !character.meaning ||
@@ -262,9 +267,27 @@ export const CharacterDetailModal: React.FC<CharacterDetailModalProps> = ({
               </p>
 
               <div className="grid grid-cols-2 gap-2 text-xs text-slate-400 pt-2 w-full">
-                <div className="bg-slate-900 p-2.5 rounded-xl border border-slate-800">
-                  <span className="text-slate-500 block text-[10px] uppercase font-mono">Bộ thủ</span>
-                  <span className="font-semibold text-slate-200">{character.radical}</span>
+                <div className="bg-slate-900 p-2.5 rounded-xl border border-slate-800 flex flex-col justify-between">
+                  <div className="flex items-center justify-between">
+                    <span className="text-slate-500 block text-[10px] uppercase font-mono">Bộ thủ</span>
+                    {onOpenRadicalView && radicalInfo && (
+                      <button
+                        type="button"
+                        onClick={() => {
+                          onClose();
+                          onOpenRadicalView(radicalInfo.id);
+                        }}
+                        className="text-[10px] text-cyan-400 hover:text-cyan-300 font-semibold cursor-pointer underline"
+                      >
+                        Sổ tay bộ →
+                      </button>
+                    )}
+                  </div>
+                  <span className="font-semibold text-slate-200">
+                    {radicalInfo
+                      ? `${radicalInfo.variants.length > 0 ? radicalInfo.variants[0] : radicalInfo.hanzi} ${radicalInfo.hanViet}`
+                      : character.radical}
+                  </span>
                 </div>
                 <div className="bg-slate-900 p-2.5 rounded-xl border border-slate-800">
                   <span className="text-slate-500 block text-[10px] uppercase font-mono">Số nét</span>
@@ -282,6 +305,51 @@ export const CharacterDetailModal: React.FC<CharacterDetailModalProps> = ({
               />
             </div>
           </div>
+
+          {/* Radical Philosophical & Associative Context */}
+          {radicalInfo && (
+            <div className="p-3.5 bg-gradient-to-r from-slate-950 via-slate-900/90 to-cyan-950/20 border border-cyan-500/30 rounded-2xl space-y-2 shadow-sm">
+              <div className="flex items-center justify-between">
+                <div className="flex items-center gap-2.5">
+                  <span className="text-2xl font-serif font-bold text-cyan-300">
+                    {radicalInfo.variants.length > 0 ? `${radicalInfo.variants[0]} (${radicalInfo.hanzi})` : radicalInfo.hanzi}
+                  </span>
+                  <div>
+                    <span className="text-xs font-bold text-slate-100">
+                      Bộ {radicalInfo.hanViet}
+                    </span>
+                    <span className="text-[11px] font-mono text-cyan-400 ml-1.5">
+                      ({radicalInfo.pinyin} · {radicalInfo.strokeCount} nét)
+                    </span>
+                  </div>
+                </div>
+
+                {onOpenRadicalView && (
+                  <button
+                    type="button"
+                    onClick={() => {
+                      onClose();
+                      onOpenRadicalView(radicalInfo.id);
+                    }}
+                    className="text-[11px] text-cyan-400 hover:text-cyan-300 font-semibold cursor-pointer flex items-center gap-1"
+                  >
+                    <span>Xem chi tiết Bộ {radicalInfo.hanViet}</span>
+                    <ArrowRight className="w-3 h-3" />
+                  </button>
+                )}
+              </div>
+
+              <p className="text-xs text-slate-300 leading-snug">
+                <strong className="text-slate-200">Ý nghĩa biểu tượng: </strong>
+                {radicalInfo.meaning}
+              </p>
+
+              <div className="text-[11px] text-cyan-200/90 bg-cyan-950/40 p-2.5 rounded-xl border border-cyan-500/20">
+                <span className="font-semibold text-cyan-400">💡 Gợi ý liên tưởng: </span>
+                {radicalInfo.associationTip}
+              </div>
+            </div>
+          )}
 
           {/* Composition & Structure */}
           {character.components && (

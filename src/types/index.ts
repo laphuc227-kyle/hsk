@@ -117,6 +117,7 @@ export interface QuizQuestion {
     fullSentence: string;
     blankSentence: string;
     targetWord: string;
+    targetPinyin?: string;
     pinyin: string;
     meaning: string;
     blankPosition: number;

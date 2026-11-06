@@ -26,12 +26,13 @@ import { WordList, StudySessionMode } from '../types';
 interface SidebarProps {
   wordLists: WordList[];
   selectedListId: string | null;
-  activeView: 'lists' | 'study' | 'analytics' | 'grammar';
+  activeView: 'lists' | 'study' | 'analytics' | 'grammar' | 'radicals';
   dueCount: number;
   onStartSession: (mode: StudySessionMode, listId?: string) => void;
   onOpenTutor: () => void;
   onOpenAnalytics: () => void;
   onOpenGrammar: () => void;
+  onOpenRadicals: () => void;
   onOpenSettings: () => void;
   onSelectList: (listId: string | null) => void;
   isOpenOnMobile?: boolean;
@@ -52,6 +53,7 @@ export const Sidebar: React.FC<SidebarProps> = ({
   onOpenTutor,
   onOpenAnalytics,
   onOpenGrammar,
+  onOpenRadicals,
   onOpenSettings,
   onSelectList,
   isOpenOnMobile = false,
@@ -177,6 +179,23 @@ export const Sidebar: React.FC<SidebarProps> = ({
             </div>
             <span className="text-[9px] font-bold font-mono px-1.5 py-0.2 rounded bg-emerald-500/20 text-emerald-300 border border-emerald-500/30">
               HSK
+            </span>
+          </button>
+
+          <button
+            onClick={() => handleAction(onOpenRadicals)}
+            className={`w-full flex items-center justify-between px-2.5 py-2 rounded-xl text-xs font-semibold transition cursor-pointer ${
+              activeView === 'radicals'
+                ? 'bg-gradient-to-r from-cyan-500/20 to-teal-500/20 text-cyan-300 border border-cyan-500/30 shadow-xs'
+                : 'text-slate-200 hover:text-cyan-300 hover:bg-slate-800/60'
+            }`}
+          >
+            <div className="flex items-center gap-2.5">
+              <Layers className="w-4 h-4 text-cyan-400" />
+              <span>Sổ tay Bộ thủ</span>
+            </div>
+            <span className="text-[9px] font-bold font-mono px-1.5 py-0.2 rounded bg-cyan-500/20 text-cyan-300 border border-cyan-500/30">
+              214
             </span>
           </button>
 

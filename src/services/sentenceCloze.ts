@@ -761,6 +761,7 @@ export function generateSentenceClozeQuestions(
         fullSentence: cleanSentence,
         blankSentence,
         targetWord: cleanTarget,
+        targetPinyin: cand.targetPinyin,
         pinyin: cand.pinyin,
         meaning: cand.meaning,
         blankPosition,

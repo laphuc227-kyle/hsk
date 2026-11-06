@@ -64,6 +64,10 @@ export const StudySession: React.FC<StudySessionProps> = ({
   const [showHanViet, setShowHanViet] = useState<boolean>(true);
   const [showMeaning, setShowMeaning] = useState<boolean>(true);
 
+  // Sentence cloze question specific visibility (hidden by default for genuine challenge)
+  const [clozeShowMeaning, setClozeShowMeaning] = useState<boolean>(false);
+  const [clozeShowPinyin, setClozeShowPinyin] = useState<boolean>(false);
+
   // Helper to filter question subtitles based on user visibility toggles
   const getFilteredSubtitle = (subtitle?: string) => {
     if (!subtitle) return null;
@@ -143,6 +147,8 @@ export const StudySession: React.FC<StudySessionProps> = ({
     setSelectedOption(null);
     setTypingInput('');
     setIsAnswered(false);
+    setClozeShowMeaning(false);
+    setClozeShowPinyin(false);
   }, [currentIndex, currentQ]);
 
   const handleFlipCard = () => {
@@ -296,11 +302,85 @@ export const StudySession: React.FC<StudySessionProps> = ({
     );
   };
 
+  // Render cloze sentence pinyin with animated blank if unanswered
+  const renderClozeSentencePinyin = (
+    q: QuizQuestion,
+    answered: boolean,
+    userChoice: string | null
+  ) => {
+    if (!q.clozeSentence) return null;
+    const rawPinyin = (q.clozeSentence.pinyin || '')
+      .replace(/\b(association|mnemonic|example)\b/gi, '')
+      .replace(/\s+/g, ' ')
+      .trim();
+    if (!rawPinyin) return null;
+
+    const targetPinyin = (q.clozeSentence.targetPinyin || '').trim();
+
+    if (!targetPinyin) {
+      return (
+        <span className="font-mono text-cyan-300 tracking-wide text-xs sm:text-sm">
+          {rawPinyin}
+        </span>
+      );
+    }
+
+    const lowerRaw = rawPinyin.toLowerCase();
+    const lowerTarget = targetPinyin.toLowerCase();
+    const idx = lowerRaw.indexOf(lowerTarget);
+
+    if (idx === -1) {
+      return (
+        <span className="font-mono text-cyan-300 tracking-wide text-xs sm:text-sm">
+          {rawPinyin}
+        </span>
+      );
+    }
+
+    const before = rawPinyin.slice(0, idx);
+    const matched = rawPinyin.slice(idx, idx + targetPinyin.length);
+    const after = rawPinyin.slice(idx + targetPinyin.length);
+
+    if (!answered) {
+      return (
+        <span className="font-mono text-cyan-300/90 tracking-wide text-xs sm:text-sm inline-block">
+          <span>{before}</span>
+          <span className="inline-block px-2 py-0.5 mx-1 align-baseline rounded-md border border-dashed border-cyan-400/80 bg-cyan-500/20 text-cyan-300 font-bold text-xs animate-pulse">
+            （ _____ ）
+          </span>
+          <span>{after}</span>
+        </span>
+      );
+    }
+
+    const isUserCorrect = userChoice === q.correctAnswer;
+    return (
+      <span className="font-mono text-cyan-300 tracking-wide text-xs sm:text-sm inline-block">
+        <span>{before}</span>
+        <span
+          className={`inline-block px-2 py-0.5 mx-1 align-baseline rounded-md border font-bold text-xs ${
+            isUserCorrect
+              ? 'border-emerald-400 bg-emerald-500/25 text-emerald-200'
+              : 'border-amber-400 bg-amber-500/25 text-amber-200'
+          }`}
+        >
+          {matched || targetPinyin}
+        </span>
+        <span>{after}</span>
+      </span>
+    );
+  };
+
   // Handle Multiple Choice selection
   const handleSelectOption = (option: string) => {
     if (isAnswered) return;
     setSelectedOption(option);
     setIsAnswered(true);
+
+    if (currentQ.clozeSentence) {
+      setClozeShowMeaning(true);
+      setClozeShowPinyin(true);
+    }
 
     const correct = option === currentQ.correctAnswer;
     setIsCorrect(correct);
@@ -695,44 +775,70 @@ export const StudySession: React.FC<StudySessionProps> = ({
 
           <button
             type="button"
-            onClick={() => setShowPinyin(!showPinyin)}
+            onClick={() => {
+              if (currentQ.clozeSentence) {
+                setClozeShowPinyin(!clozeShowPinyin);
+              } else {
+                setShowPinyin(!showPinyin);
+              }
+            }}
             className={`px-2.5 py-1.5 rounded-xl text-xs font-bold transition flex items-center gap-1 cursor-pointer border ${
-              showPinyin
+              (currentQ.clozeSentence ? clozeShowPinyin : showPinyin)
                 ? 'bg-cyan-500/20 text-cyan-300 border-cyan-500/40 shadow-xs'
                 : 'bg-slate-950 text-slate-500 border-slate-800 hover:text-slate-300'
             }`}
-            title={showPinyin ? 'Ẩn Pinyin để tăng độ khó' : 'Bật hiển thị Pinyin'}
+            title={(currentQ.clozeSentence ? clozeShowPinyin : showPinyin) ? 'Ẩn Pinyin' : 'Hiện Pinyin'}
           >
-            {showPinyin ? <Eye className="w-3.5 h-3.5 text-cyan-400" /> : <EyeOff className="w-3.5 h-3.5 text-slate-500" />}
-            <span className="text-[11px] sm:text-xs">Pinyin {showPinyin ? 'Hiện' : 'Ẩn'}</span>
+            {(currentQ.clozeSentence ? clozeShowPinyin : showPinyin) ? (
+              <Eye className="w-3.5 h-3.5 text-cyan-400" />
+            ) : (
+              <EyeOff className="w-3.5 h-3.5 text-slate-500" />
+            )}
+            <span className="text-[11px] sm:text-xs">
+              Pinyin {(currentQ.clozeSentence ? clozeShowPinyin : showPinyin) ? 'Hiện' : 'Ẩn'}
+            </span>
           </button>
+
+          {!currentQ.clozeSentence && (
+            <button
+              type="button"
+              onClick={() => setShowHanViet(!showHanViet)}
+              className={`px-2.5 py-1.5 rounded-xl text-xs font-bold transition flex items-center gap-1 cursor-pointer border ${
+                showHanViet
+                  ? 'bg-teal-500/20 text-teal-300 border-teal-500/40 shadow-xs'
+                  : 'bg-slate-950 text-slate-500 border-slate-800 hover:text-slate-300'
+              }`}
+              title={showHanViet ? 'Ẩn Âm Hán Việt để thử thách trí nhớ' : 'Bật hiển thị Âm Hán Việt'}
+            >
+              {showHanViet ? <Eye className="w-3.5 h-3.5 text-teal-400" /> : <EyeOff className="w-3.5 h-3.5 text-slate-500" />}
+              <span className="text-[11px] sm:text-xs">Hán Việt {showHanViet ? 'Hiện' : 'Ẩn'}</span>
+            </button>
+          )}
 
           <button
             type="button"
-            onClick={() => setShowHanViet(!showHanViet)}
+            onClick={() => {
+              if (currentQ.clozeSentence) {
+                setClozeShowMeaning(!clozeShowMeaning);
+              } else {
+                setShowMeaning(!showMeaning);
+              }
+            }}
             className={`px-2.5 py-1.5 rounded-xl text-xs font-bold transition flex items-center gap-1 cursor-pointer border ${
-              showHanViet
-                ? 'bg-teal-500/20 text-teal-300 border-teal-500/40 shadow-xs'
-                : 'bg-slate-950 text-slate-500 border-slate-800 hover:text-slate-300'
-            }`}
-            title={showHanViet ? 'Ẩn Âm Hán Việt để thử thách trí nhớ' : 'Bật hiển thị Âm Hán Việt'}
-          >
-            {showHanViet ? <Eye className="w-3.5 h-3.5 text-teal-400" /> : <EyeOff className="w-3.5 h-3.5 text-slate-500" />}
-            <span className="text-[11px] sm:text-xs">Hán Việt {showHanViet ? 'Hiện' : 'Ẩn'}</span>
-          </button>
-
-          <button
-            type="button"
-            onClick={() => setShowMeaning(!showMeaning)}
-            className={`px-2.5 py-1.5 rounded-xl text-xs font-bold transition flex items-center gap-1 cursor-pointer border ${
-              showMeaning
+              (currentQ.clozeSentence ? clozeShowMeaning : showMeaning)
                 ? 'bg-purple-500/20 text-purple-300 border-purple-500/40 shadow-xs'
                 : 'bg-slate-950 text-slate-500 border-slate-800 hover:text-slate-300'
             }`}
-            title={showMeaning ? 'Ẩn Nghĩa tiếng Việt để thử thách trí nhớ' : 'Bật hiển thị Nghĩa tiếng Việt'}
+            title={(currentQ.clozeSentence ? clozeShowMeaning : showMeaning) ? 'Ẩn Nghĩa tiếng Việt' : 'Hiện Nghĩa tiếng Việt'}
           >
-            {showMeaning ? <Eye className="w-3.5 h-3.5 text-purple-400" /> : <EyeOff className="w-3.5 h-3.5 text-slate-500" />}
-            <span className="text-[11px] sm:text-xs">Nghĩa {showMeaning ? 'Hiện' : 'Ẩn'}</span>
+            {(currentQ.clozeSentence ? clozeShowMeaning : showMeaning) ? (
+              <Eye className="w-3.5 h-3.5 text-purple-400" />
+            ) : (
+              <EyeOff className="w-3.5 h-3.5 text-slate-500" />
+            )}
+            <span className="text-[11px] sm:text-xs">
+              Nghĩa {(currentQ.clozeSentence ? clozeShowMeaning : showMeaning) ? 'Hiện' : 'Ẩn'}
+            </span>
           </button>
         </div>
       </div>
@@ -1165,10 +1271,76 @@ export const StudySession: React.FC<StudySessionProps> = ({
                   {renderClozeSentenceWithBlank(currentQ, isAnswered, selectedOption)}
                 </div>
 
-                {/* Translation hint */}
-                <p className="text-xs sm:text-sm text-slate-400 font-sans italic max-w-xl mx-auto">
-                  {currentQ.clozeSentence.meaning}
-                </p>
+                {/* Optional Pinyin Display (Animated) */}
+                <AnimatePresence>
+                  {clozeShowPinyin && (
+                    <motion.div
+                      initial={{ opacity: 0, y: -6 }}
+                      animate={{ opacity: 1, y: 0 }}
+                      exit={{ opacity: 0, y: -6 }}
+                      transition={{ duration: 0.18 }}
+                      className="pt-1"
+                    >
+                      <div className="inline-flex items-center gap-2 px-3.5 py-1.5 rounded-xl bg-cyan-950/40 border border-cyan-500/30 text-cyan-300 shadow-sm max-w-full overflow-x-auto">
+                        <span className="text-[10px] font-mono uppercase tracking-wider text-cyan-400/80 font-bold shrink-0">
+                          Pinyin:
+                        </span>
+                        {renderClozeSentencePinyin(currentQ, isAnswered, selectedOption)}
+                      </div>
+                    </motion.div>
+                  )}
+                </AnimatePresence>
+
+                {/* Optional Meaning Display (Animated) */}
+                <AnimatePresence>
+                  {clozeShowMeaning && (
+                    <motion.div
+                      initial={{ opacity: 0, y: -6 }}
+                      animate={{ opacity: 1, y: 0 }}
+                      exit={{ opacity: 0, y: -6 }}
+                      transition={{ duration: 0.18 }}
+                      className="pt-1"
+                    >
+                      <div className="inline-flex items-center gap-2 px-3.5 py-1.5 rounded-xl bg-purple-950/35 border border-purple-500/30 text-slate-200 text-xs sm:text-sm font-sans italic shadow-sm max-w-xl mx-auto text-left sm:text-center">
+                        <span className="text-[10px] font-sans not-italic uppercase tracking-wider text-purple-400 font-bold shrink-0">
+                          Dịch nghĩa:
+                        </span>
+                        <span>{currentQ.clozeSentence.meaning}</span>
+                      </div>
+                    </motion.div>
+                  )}
+                </AnimatePresence>
+
+                {/* In-Card Visibility Toggles for Pinyin & Meaning */}
+                <div className="flex items-center justify-center flex-wrap gap-2 pt-2 border-t border-slate-800/60">
+                  <button
+                    type="button"
+                    onClick={() => setClozeShowPinyin(!clozeShowPinyin)}
+                    className={`px-3 py-1.5 rounded-xl text-xs font-semibold transition-all flex items-center gap-1.5 cursor-pointer border select-none active:scale-95 ${
+                      clozeShowPinyin
+                        ? 'bg-cyan-500/20 text-cyan-300 border-cyan-500/40 shadow-xs'
+                        : 'bg-slate-900/90 text-slate-400 border-slate-800 hover:text-slate-200 hover:bg-slate-800'
+                    }`}
+                    title={clozeShowPinyin ? 'Ẩn phiên âm Pinyin của câu' : 'Hiện phiên âm Pinyin của câu'}
+                  >
+                    {clozeShowPinyin ? <Eye className="w-3.5 h-3.5 text-cyan-400" /> : <EyeOff className="w-3.5 h-3.5 text-slate-500" />}
+                    <span>{clozeShowPinyin ? 'Ẩn Pinyin' : 'Hiện Pinyin'}</span>
+                  </button>
+
+                  <button
+                    type="button"
+                    onClick={() => setClozeShowMeaning(!clozeShowMeaning)}
+                    className={`px-3 py-1.5 rounded-xl text-xs font-semibold transition-all flex items-center gap-1.5 cursor-pointer border select-none active:scale-95 ${
+                      clozeShowMeaning
+                        ? 'bg-purple-500/20 text-purple-300 border-purple-500/40 shadow-xs'
+                        : 'bg-slate-900/90 text-slate-400 border-slate-800 hover:text-slate-200 hover:bg-slate-800'
+                    }`}
+                    title={clozeShowMeaning ? 'Ẩn nghĩa tiếng Việt của câu' : 'Hiện nghĩa tiếng Việt của câu'}
+                  >
+                    {clozeShowMeaning ? <Eye className="w-3.5 h-3.5 text-purple-400" /> : <EyeOff className="w-3.5 h-3.5 text-slate-500" />}
+                    <span>{clozeShowMeaning ? 'Ẩn nghĩa câu' : 'Hiện nghĩa câu'}</span>
+                  </button>
+                </div>
               </div>
 
               {/* 4 Tricky Options Grid */}
