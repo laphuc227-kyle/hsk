@@ -663,7 +663,14 @@ export const StudySession: React.FC<StudySessionProps> = ({
     );
   }
 
-  const currentListObj = wordLists.find((l) => l.id === selectedListId);
+  const getListName = (id: string | null) => {
+    if (!id || id === 'all') return 'Tất cả từ vựng';
+    if (id === 'all_single') return 'Từ đơn';
+    if (id === 'compound_review') return 'Từ ghép ôn tập (100% đã học)';
+    if (id === 'compound_expansion') return 'Từ ghép mở rộng (Chữ mới)';
+    const found = wordLists.find((l) => l.id === id);
+    return found ? found.name : 'Tất cả từ vựng';
+  };
 
   return (
     <div className="max-w-2xl mx-auto space-y-6 text-slate-100">
@@ -684,7 +691,7 @@ export const StudySession: React.FC<StudySessionProps> = ({
               <span className="text-xs font-bold text-emerald-300 bg-emerald-500/20 px-2.5 py-0.5 rounded-lg border border-emerald-500/40">
                 Từ ghép mở rộng (Chữ mới)
               </span>
-            ) : onChangeList && wordLists && wordLists.length > 0 ? (
+            ) : onChangeList ? (
               <div className="flex items-center gap-1 text-xs">
                 <span className="text-slate-400 text-[11px]">Danh sách:</span>
                 <select
@@ -693,16 +700,21 @@ export const StudySession: React.FC<StudySessionProps> = ({
                   className="text-xs font-bold text-emerald-300 bg-slate-950 border border-emerald-500/40 rounded-lg px-2 py-0.5 cursor-pointer focus:outline-hidden"
                 >
                   <option value="">Tất cả từ vựng</option>
-                  {wordLists.map((l) => (
-                    <option key={l.id} value={l.id}>
-                      {l.name}
-                    </option>
-                  ))}
+                  <option value="all_single">Từ đơn</option>
+                  <option value="compound_review">Từ ghép ôn tập (100% đã học)</option>
+                  <option value="compound_expansion">Từ ghép mở rộng (Chữ mới)</option>
+                  {wordLists
+                    .filter((l) => !['hsk1', 'hsk2', 'hsk3'].includes(l.id) && !l.isPredefined)
+                    .map((l) => (
+                      <option key={l.id} value={l.id}>
+                        {l.name}
+                      </option>
+                    ))}
                 </select>
               </div>
             ) : (
               <span className="text-xs font-bold text-emerald-300 bg-emerald-500/20 px-2 py-0.5 rounded-lg border border-emerald-500/40">
-                {currentListObj ? currentListObj.name : 'Tất cả từ vựng'}
+                {getListName(selectedListId)}
               </span>
             )}
 

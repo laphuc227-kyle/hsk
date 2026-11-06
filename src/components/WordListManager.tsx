@@ -42,7 +42,11 @@ export const WordListManager: React.FC<WordListManagerProps> = ({
   // New Word Batch & Manual Input State
   const [addMode, setAddMode] = useState<'ai' | 'manual'>('ai');
   const [batchInputText, setBatchInputText] = useState('');
-  const [targetListIdForAdd, setTargetListIdForAdd] = useState<string>(selectedListId || 'hsk1');
+  const [targetListIdForAdd, setTargetListIdForAdd] = useState<string>(
+    selectedListId && !['all_single', 'all_compound', 'compound_review', 'compound_expansion'].includes(selectedListId)
+      ? selectedListId
+      : (wordLists.find((l) => !['hsk1', 'hsk2', 'hsk3'].includes(l.id))?.id || wordLists[0]?.id || 'default')
+  );
   const [isProcessingAdd, setIsProcessingAdd] = useState(false);
   const [addStatusMessage, setAddStatusMessage] = useState('');
 
@@ -81,11 +85,25 @@ export const WordListManager: React.FC<WordListManagerProps> = ({
   // Sub-filter when viewing compounds: 'all_compounds' | 'compound_review' | 'compound_expansion'
   const [compoundSubFilter, setCompoundSubFilter] = useState<'all_compounds' | 'compound_review' | 'compound_expansion'>('all_compounds');
 
+  const isCompoundView =
+    selectedListId === 'all_compound' ||
+    selectedListId === 'compound_review' ||
+    selectedListId === 'compound_expansion';
+
+  const effectiveCompoundSubFilter =
+    selectedListId === 'compound_review'
+      ? 'compound_review'
+      : selectedListId === 'compound_expansion'
+      ? 'compound_expansion'
+      : compoundSubFilter;
+
   // Filter base characters depending on selected sidebar list
   const scopeCharacters = characters.filter((c) => {
     if (!selectedListId) return true;
     if (selectedListId === 'all_single') return c.hanzi.length === 1;
-    if (selectedListId === 'all_compound') return c.hanzi.length > 1;
+    if (selectedListId === 'all_compound' || selectedListId === 'compound_review' || selectedListId === 'compound_expansion') {
+      return false;
+    }
     return c.listIds.includes(selectedListId);
   });
 
@@ -98,11 +116,11 @@ export const WordListManager: React.FC<WordListManagerProps> = ({
   // 2. Expansion matches (contains 1+ known single character + 1+ new character) - Từ ghép mở rộng
   const expansionCompounds = detectedCompounds.filter((d) => d.isExpansionMatch);
 
-  // Active compound list based on sub-filter
+  // Active compound list based on effective sub-filter
   const activeCompoundList =
-    compoundSubFilter === 'compound_review'
+    effectiveCompoundSubFilter === 'compound_review'
       ? fullMatchCompounds
-      : compoundSubFilter === 'compound_expansion'
+      : effectiveCompoundSubFilter === 'compound_expansion'
       ? expansionCompounds
       : detectedCompounds;
 
@@ -130,10 +148,12 @@ export const WordListManager: React.FC<WordListManagerProps> = ({
     });
   }, [activeCompoundList, searchTerm]);
 
+  const defaultUserListId = wordLists.find((l) => !['hsk1', 'hsk2', 'hsk3'].includes(l.id))?.id || wordLists[0]?.id || 'default';
+
   const handleSaveDetectedCompound = (dc: DetectedCompoundWord) => {
-    const listTarget = selectedListId && !['all_single', 'all_compound'].includes(selectedListId)
+    const listTarget = selectedListId && !['all_single', 'all_compound', 'compound_review', 'compound_expansion'].includes(selectedListId)
       ? [selectedListId]
-      : ['hsk1'];
+      : [defaultUserListId];
     const charObj = convertCompoundToCharacter(dc, listTarget);
     addCharacter(charObj);
     onRefreshData();
@@ -155,9 +175,9 @@ export const WordListManager: React.FC<WordListManagerProps> = ({
   // Handler to add a missing constituent single character into user vocabulary in 1 click
   const handleAddMissingConstituent = (item: SmartSearchConstituent) => {
     const info = item.fallbackInfo;
-    const listTarget = selectedListId && !['all_single', 'all_compound'].includes(selectedListId)
+    const listTarget = selectedListId && !['all_single', 'all_compound', 'compound_review', 'compound_expansion'].includes(selectedListId)
       ? [selectedListId]
-      : ['hsk1'];
+      : [defaultUserListId];
 
     const newChar: Character = {
       id: `c_${Date.now()}_${Math.random().toString(36).substring(2, 7)}`,
@@ -569,6 +589,10 @@ export const WordListManager: React.FC<WordListManagerProps> = ({
             <BookOpen className="w-5 h-5 text-emerald-400" />
             {selectedListId === 'all_single'
               ? 'Tất cả chữ đơn'
+              : selectedListId === 'compound_review'
+              ? 'Từ ghép ôn tập (100% đã học)'
+              : selectedListId === 'compound_expansion'
+              ? 'Từ ghép mở rộng (Chữ mới)'
               : selectedListId === 'all_compound'
               ? 'Tất cả từ ghép'
               : selectedListId === null
@@ -580,6 +604,10 @@ export const WordListManager: React.FC<WordListManagerProps> = ({
           <p className="text-xs text-slate-400 pt-0.5">
             {selectedListId === 'all_single'
               ? `Hiển thị ${singleCount} chữ Hán đơn độc lập`
+              : selectedListId === 'compound_review'
+              ? `Hiển thị ${fullMatchCompounds.length} từ ghép suy ra 100% từ các chữ đơn bạn đã học`
+              : selectedListId === 'compound_expansion'
+              ? `Hiển thị ${expansionCompounds.length} từ ghép mở rộng gợi ý chứa chữ đã học và chữ mới`
               : selectedListId === 'all_compound'
               ? `Hiển thị các từ ghép từ 2 chữ Hán trở lên`
               : selectedListId === null
@@ -592,15 +620,6 @@ export const WordListManager: React.FC<WordListManagerProps> = ({
 
         <div className="flex items-center gap-2">
           <button
-            onClick={handleAutoCategorizeHSK}
-            className="flex items-center gap-1.5 px-3 py-2 text-xs font-semibold text-cyan-300 bg-slate-900 hover:bg-slate-800 rounded-xl border border-cyan-500/30 transition cursor-pointer"
-            title="Tự động phân loại tất cả từ vựng trong bộ vào HSK1, HSK2, HSK3"
-          >
-            <Sparkles className="w-4 h-4 text-cyan-400" />
-            <span>Phân loại HSK</span>
-          </button>
-
-          <button
             onClick={() => setShowExportModal(true)}
             className="flex items-center gap-1.5 px-3.5 py-2 text-xs font-bold text-slate-200 bg-slate-900 hover:bg-slate-800 hover:text-emerald-300 rounded-xl border border-slate-800 hover:border-emerald-500/40 transition cursor-pointer"
           >
@@ -610,7 +629,7 @@ export const WordListManager: React.FC<WordListManagerProps> = ({
 
           <button
             onClick={() => {
-              setTargetListIdForAdd(selectedListId && !['all_single', 'all_compound'].includes(selectedListId) ? selectedListId : 'hsk1');
+              setTargetListIdForAdd(selectedListId && !['all_single', 'all_compound', 'compound_review', 'compound_expansion'].includes(selectedListId) ? selectedListId : defaultUserListId);
               setShowAddWordModal(true);
             }}
             className="flex items-center gap-1.5 px-3.5 py-2 text-xs font-bold text-slate-950 bg-gradient-to-r from-emerald-400 to-teal-300 hover:from-emerald-300 hover:to-teal-200 rounded-xl shadow-md shadow-emerald-500/20 transition cursor-pointer"
@@ -630,8 +649,8 @@ export const WordListManager: React.FC<WordListManagerProps> = ({
       </div>
 
       {/* Conditionally Render Filter Bar */}
-      {/* 1. HSK lists / Custom lists: 3-way Filter (Tất cả, Chữ đơn, Từ ghép) */}
-      {selectedListId !== null && selectedListId !== 'all_single' && selectedListId !== 'all_compound' && (
+      {/* 1. Custom lists: 3-way Filter (Tất cả, Chữ đơn, Từ ghép) */}
+      {!isCompoundView && selectedListId !== null && selectedListId !== 'all_single' && (
         <div className="flex items-center justify-between flex-wrap gap-2 bg-slate-900/60 p-3 rounded-2xl border border-slate-800/80">
           <div className="flex items-center gap-2">
             <span className="text-xs font-bold text-slate-400 uppercase tracking-wider">Lọc theo loại:</span>
@@ -744,7 +763,17 @@ export const WordListManager: React.FC<WordListManagerProps> = ({
           <div className="space-y-1 z-10">
             <div className="flex items-center gap-2">
               <span className="text-[11px] font-bold px-2 py-0.5 rounded-full bg-emerald-500/20 text-emerald-300 border border-emerald-500/40 uppercase tracking-wider flex items-center gap-1">
-                {selectedListId === 'all_compound' ? (
+                {selectedListId === 'compound_review' ? (
+                  <>
+                    <CheckCircle2 className="w-3 h-3 text-amber-400" />
+                    Từ ghép ôn tập
+                  </>
+                ) : selectedListId === 'compound_expansion' ? (
+                  <>
+                    <Sparkles className="w-3 h-3 text-purple-400" />
+                    Từ ghép mở rộng
+                  </>
+                ) : selectedListId === 'all_compound' ? (
                   <>
                     <Combine className="w-3 h-3 text-amber-400" />
                     {compoundSubFilter === 'compound_review'
@@ -760,6 +789,10 @@ export const WordListManager: React.FC<WordListManagerProps> = ({
               <span className="text-xs font-bold text-slate-100">
                 {selectedListId === 'all_single'
                   ? 'Tất cả chữ đơn'
+                  : selectedListId === 'compound_review'
+                  ? 'Từ ghép ôn tập (100% đã học)'
+                  : selectedListId === 'compound_expansion'
+                  ? 'Từ ghép mở rộng (Gợi ý chữ mới)'
                   : selectedListId === 'all_compound'
                   ? compoundSubFilter === 'compound_review'
                     ? 'Từ ghép ôn tập (100% chữ đơn sẵn có)'
@@ -773,11 +806,15 @@ export const WordListManager: React.FC<WordListManagerProps> = ({
                   : 'Tất cả từ vựng'}
               </span>
               <span className="text-xs text-cyan-400 font-mono">
-                ({selectedListId === 'all_compound' ? filteredCompoundList.length : filteredCharacters.length} mục)
+                ({isCompoundView ? filteredCompoundList.length : filteredCharacters.length} mục)
               </span>
             </div>
             <p className="text-xs text-slate-300 leading-relaxed max-w-2xl">
-              {selectedListId === 'all_compound' ? (
+              {selectedListId === 'compound_review' ? (
+                'Những từ ghép được suy ra 100% từ danh sách các chữ đơn bạn đã học. Dùng để ôn tập, củng cố mối liên kết từ mà không phát sinh thêm chữ mới.'
+              ) : selectedListId === 'compound_expansion' ? (
+                'Những từ ghép mở rộng chứa 1 hoặc 2 chữ đơn bạn đã biết kết hợp với chữ đơn mới bên ngoài hệ thống gợi ý cho bạn nên học.'
+              ) : selectedListId === 'all_compound' ? (
                 compoundSubFilter === 'compound_review' ? (
                   'Những từ ghép được suy ra 100% từ danh sách các chữ đơn bạn đã học. Dùng để ôn tập, củng cố mối liên kết từ mà không phát sinh thêm chữ mới.'
                 ) : compoundSubFilter === 'compound_expansion' ? (
@@ -800,12 +837,58 @@ export const WordListManager: React.FC<WordListManagerProps> = ({
           </div>
 
           <div className="flex flex-wrap items-center gap-2.5 shrink-0 z-10">
-            {selectedListId === 'all_compound' ? (
+            {selectedListId === 'compound_review' ? (
+              <>
+                <button
+                  type="button"
+                  onClick={() => onStartSession('compound_words', 'compound_review')}
+                  className="px-3.5 py-2 text-xs font-bold text-slate-950 bg-gradient-to-r from-amber-400 to-yellow-300 hover:from-amber-300 hover:to-yellow-200 active:scale-95 rounded-xl transition flex items-center gap-1.5 cursor-pointer shadow-md shadow-amber-500/20"
+                >
+                  <Combine className="w-4 h-4 stroke-[2.5]" />
+                  <span>Ôn từ ghép đã học ({fullMatchCompounds.length})</span>
+                </button>
+                <button
+                  type="button"
+                  onClick={() => onStartSession('quick_flashcard', 'compound_review')}
+                  className="px-3.5 py-2 text-xs font-bold text-slate-950 bg-gradient-to-r from-cyan-400 to-sky-300 hover:from-cyan-300 hover:to-sky-200 active:scale-95 rounded-xl transition flex items-center gap-1.5 cursor-pointer shadow-md shadow-cyan-500/20"
+                >
+                  <Zap className="w-4 h-4 stroke-[2.5]" />
+                  <span>Học Flashcard</span>
+                </button>
+                <button
+                  type="button"
+                  onClick={() => onStartSession('random_test', 'compound_review')}
+                  className="px-3.5 py-2 text-xs font-bold text-slate-950 bg-gradient-to-r from-emerald-400 to-teal-300 hover:from-emerald-300 hover:to-teal-200 active:scale-95 rounded-xl transition flex items-center gap-1.5 cursor-pointer shadow-md shadow-emerald-500/20"
+                >
+                  <Target className="w-4 h-4 stroke-[2.5]" />
+                  <span>Kiểm tra Quiz</span>
+                </button>
+              </>
+            ) : selectedListId === 'compound_expansion' ? (
+              <>
+                <button
+                  type="button"
+                  onClick={() => onStartSession('compound_expansion', 'compound_expansion')}
+                  className="px-3.5 py-2 text-xs font-bold text-slate-950 bg-gradient-to-r from-purple-400 to-violet-300 hover:from-purple-300 hover:to-violet-200 active:scale-95 rounded-xl transition flex items-center gap-1.5 cursor-pointer shadow-md shadow-purple-500/20"
+                >
+                  <Sparkles className="w-4 h-4 stroke-[2.5]" />
+                  <span>Học từ ghép mở rộng ({expansionCompounds.length})</span>
+                </button>
+                <button
+                  type="button"
+                  onClick={() => onStartSession('quick_flashcard', 'compound_expansion')}
+                  className="px-3.5 py-2 text-xs font-bold text-slate-950 bg-gradient-to-r from-cyan-400 to-sky-300 hover:from-cyan-300 hover:to-sky-200 active:scale-95 rounded-xl transition flex items-center gap-1.5 cursor-pointer shadow-md shadow-cyan-500/20"
+                >
+                  <Zap className="w-4 h-4 stroke-[2.5]" />
+                  <span>Học Flashcard</span>
+                </button>
+              </>
+            ) : selectedListId === 'all_compound' ? (
               <>
                 {compoundSubFilter !== 'compound_expansion' && fullMatchCompounds.length > 0 && (
                   <button
                     type="button"
-                    onClick={() => onStartSession('compound_words', undefined)}
+                    onClick={() => onStartSession('compound_words', 'compound_review')}
                     className="px-3.5 py-2 text-xs font-bold text-slate-950 bg-gradient-to-r from-amber-400 to-yellow-300 hover:from-amber-300 hover:to-yellow-200 active:scale-95 rounded-xl transition flex items-center gap-1.5 cursor-pointer shadow-md shadow-amber-500/20"
                   >
                     <Combine className="w-4 h-4 stroke-[2.5]" />
@@ -816,7 +899,7 @@ export const WordListManager: React.FC<WordListManagerProps> = ({
                 {compoundSubFilter !== 'compound_review' && expansionCompounds.length > 0 && (
                   <button
                     type="button"
-                    onClick={() => onStartSession('compound_expansion', undefined)}
+                    onClick={() => onStartSession('compound_expansion', 'compound_expansion')}
                     className="px-3.5 py-2 text-xs font-bold text-slate-950 bg-gradient-to-r from-emerald-400 to-teal-300 hover:from-emerald-300 hover:to-teal-200 active:scale-95 rounded-xl transition flex items-center gap-1.5 cursor-pointer shadow-md shadow-emerald-500/20"
                   >
                     <Sparkles className="w-4 h-4 stroke-[2.5]" />
@@ -994,7 +1077,7 @@ export const WordListManager: React.FC<WordListManagerProps> = ({
       </div>
 
       {/* Cards Grid */}
-      {selectedListId === 'all_compound' ? (
+      {isCompoundView ? (
         <div className="space-y-4">
           {filteredCompoundList.length === 0 ? (
             <div className="text-center py-12 bg-slate-900/40 rounded-2xl border border-dashed border-slate-800">
@@ -1319,11 +1402,13 @@ export const WordListManager: React.FC<WordListManagerProps> = ({
                   onChange={(e) => setTargetListIdForAdd(e.target.value)}
                   className="w-full p-2.5 bg-slate-950 text-slate-100 border border-slate-800 rounded-xl focus:outline-hidden focus:border-cyan-500"
                 >
-                  {wordLists.map((l) => (
-                    <option key={l.id} value={l.id}>
-                      {l.name}
-                    </option>
-                  ))}
+                  {wordLists
+                    .filter((l) => !['hsk1', 'hsk2', 'hsk3'].includes(l.id))
+                    .map((l) => (
+                      <option key={l.id} value={l.id}>
+                        {l.name}
+                      </option>
+                    ))}
                 </select>
               </div>
 

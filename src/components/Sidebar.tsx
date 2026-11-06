@@ -246,71 +246,49 @@ export const Sidebar: React.FC<SidebarProps> = ({
             onClick={() => handleAction(() => onSelectList('all_single'))}
             className={`w-full flex items-center justify-between px-2.5 py-2 rounded-xl text-xs font-medium transition cursor-pointer ${
               activeView === 'lists' && selectedListId === 'all_single'
-                ? 'bg-gradient-to-r from-emerald-500/20 to-teal-500/20 text-emerald-300 font-semibold border border-emerald-500/30 shadow-xs'
+                ? 'bg-gradient-to-r from-teal-500/20 to-emerald-500/20 text-teal-300 font-semibold border border-teal-500/30 shadow-xs'
                 : 'text-slate-300 hover:text-slate-100 hover:bg-slate-800/60'
             }`}
           >
             <div className="flex items-center gap-2.5">
               <Layers className="w-3.5 h-3.5 text-teal-400" />
-              <span>Tất cả chữ đơn</span>
+              <span>Từ đơn</span>
             </div>
           </button>
 
           <button
-            onClick={() => handleAction(() => onSelectList('all_compound'))}
+            onClick={() => handleAction(() => onSelectList('compound_review'))}
             className={`w-full flex items-center justify-between px-2.5 py-2 rounded-xl text-xs font-medium transition cursor-pointer ${
-              activeView === 'lists' && selectedListId === 'all_compound'
+              activeView === 'lists' && selectedListId === 'compound_review'
                 ? 'bg-gradient-to-r from-amber-500/20 to-yellow-500/20 text-amber-300 font-semibold border border-amber-500/30 shadow-xs'
                 : 'text-slate-300 hover:text-slate-100 hover:bg-slate-800/60'
             }`}
           >
             <div className="flex items-center gap-2.5">
               <Combine className="w-3.5 h-3.5 text-amber-400" />
-              <span>Tất cả từ ghép</span>
+              <span>Từ ghép ôn tập</span>
             </div>
+            <span className="text-[9px] font-bold font-mono px-1.5 py-0.2 rounded bg-amber-500/20 text-amber-300 border border-amber-500/30">
+              100%
+            </span>
           </button>
 
-          {/* HSK Lists Section */}
-          <div className="pt-2 pb-1 px-2 border-t border-slate-800/60 mt-2">
-            <p className="text-[10px] font-bold text-slate-400/80 uppercase tracking-wider">
-              Cấp độ HSK
-            </p>
-          </div>
-
-          {wordLists
-            .filter((l) => ['hsk1', 'hsk2', 'hsk3'].includes(l.id) || l.isPredefined)
-            .map((list) => {
-              const isSelected = activeView === 'lists' && selectedListId === list.id;
-              return (
-                <div key={list.id} className="group relative flex items-center">
-                  <button
-                    onClick={() => handleAction(() => onSelectList(list.id))}
-                    className={`w-full flex items-center justify-between pl-2.5 pr-8 py-2 rounded-xl text-xs font-medium transition cursor-pointer ${
-                      isSelected
-                        ? 'bg-gradient-to-r from-emerald-500/20 to-cyan-500/20 text-cyan-300 font-semibold border border-cyan-500/30 shadow-xs'
-                        : 'text-slate-300 hover:text-slate-100 hover:bg-slate-800/60'
-                    }`}
-                  >
-                    <div className="flex items-center gap-2.5 truncate">
-                      <GraduationCap className="w-3.5 h-3.5 text-cyan-400 shrink-0" />
-                      <span className="truncate">{list.name}</span>
-                    </div>
-                  </button>
-
-                  <button
-                    type="button"
-                    onClick={(e) => {
-                      e.stopPropagation();
-                      handleAction(() => onStartSession('random_test', list.id));
-                    }}
-                    className="absolute right-1.5 p-1 rounded-lg hover:bg-emerald-500/20 text-slate-500 hover:text-emerald-300 transition cursor-pointer opacity-70 group-hover:opacity-100"
-                    title={`Kiểm tra danh sách ${list.name}`}
-                  >
-                    <Target className="w-3.5 h-3.5" />
-                  </button>
-                </div>
-              );
-            })}
+          <button
+            onClick={() => handleAction(() => onSelectList('compound_expansion'))}
+            className={`w-full flex items-center justify-between px-2.5 py-2 rounded-xl text-xs font-medium transition cursor-pointer ${
+              activeView === 'lists' && selectedListId === 'compound_expansion'
+                ? 'bg-gradient-to-r from-cyan-500/20 to-sky-500/20 text-cyan-300 font-semibold border border-cyan-500/30 shadow-xs'
+                : 'text-slate-300 hover:text-slate-100 hover:bg-slate-800/60'
+            }`}
+          >
+            <div className="flex items-center gap-2.5">
+              <Sparkles className="w-3.5 h-3.5 text-cyan-400" />
+              <span>Từ ghép mở rộng</span>
+            </div>
+            <span className="text-[9px] font-bold font-mono px-1.5 py-0.2 rounded bg-cyan-500/20 text-cyan-300 border border-cyan-500/30">
+              Chữ mới
+            </span>
+          </button>
 
           {/* Custom user lists if any */}
           {wordLists.filter((l) => !['hsk1', 'hsk2', 'hsk3'].includes(l.id) && !l.isPredefined).length > 0 && (

@@ -80,7 +80,7 @@ export function selectCharactersForSession(
     const detectedCompounds = detectCompoundWordsFromCharacters(baseChars);
     const fullMatchCompounds = detectedCompounds.filter((dc) => dc.isFullMatch);
     const convertedChars = fullMatchCompounds.map((dc) =>
-      convertCompoundToCharacter(dc, selectedListId ? [selectedListId] : ['hsk1'])
+      convertCompoundToCharacter(dc, selectedListId ? [selectedListId] : ['compound_review'])
     );
 
     const userSingleCharSet = new Set<string>();
@@ -107,8 +107,8 @@ export function selectCharactersForSession(
     // Fallback if empty
     if (existingHanziMap.size === 0) {
       const globalDetected = detectCompoundWordsFromCharacters(allCharacters);
-      globalDetected.forEach((dc) => {
-        const c = convertCompoundToCharacter(dc, ['hsk1']);
+      globalDetected.filter((dc) => dc.isFullMatch).forEach((dc) => {
+        const c = convertCompoundToCharacter(dc, ['compound_review']);
         existingHanziMap.set(c.hanzi, c);
       });
     }
@@ -120,7 +120,7 @@ export function selectCharactersForSession(
 
   // Special Mode 2: compound_expansion (Expansion learning with new chars)
   if (mode === 'compound_expansion') {
-    const isSpecificList = selectedListId && !['all', 'all_single', 'all_compound'].includes(selectedListId);
+    const isSpecificList = selectedListId && !['all', 'all_single', 'all_compound', 'compound_review', 'compound_expansion'].includes(selectedListId);
     const baseChars = isSpecificList
       ? allCharacters.filter((c) => (c.listIds || []).includes(selectedListId))
       : allCharacters;
@@ -128,7 +128,7 @@ export function selectCharactersForSession(
     const detectedCompounds = detectCompoundWordsFromCharacters(baseChars);
     const expansionCompounds = detectedCompounds.filter((dc) => dc.isExpansionMatch);
     const convertedChars = expansionCompounds.map((dc) =>
-      convertCompoundToCharacter(dc, selectedListId ? [selectedListId] : ['hsk1'])
+      convertCompoundToCharacter(dc, selectedListId ? [selectedListId] : ['compound_expansion'])
     );
 
     const userSingleCharSet = new Set<string>();
@@ -156,8 +156,8 @@ export function selectCharactersForSession(
     // Fallback if empty
     if (existingHanziMap.size === 0) {
       const globalDetected = detectCompoundWordsFromCharacters(allCharacters);
-      globalDetected.forEach((dc) => {
-        const c = convertCompoundToCharacter(dc, ['hsk1']);
+      globalDetected.filter((dc) => dc.isExpansionMatch).forEach((dc) => {
+        const c = convertCompoundToCharacter(dc, ['compound_expansion']);
         existingHanziMap.set(c.hanzi, c);
       });
     }
@@ -172,10 +172,35 @@ export function selectCharactersForSession(
 
   if (selectedListId === 'all_single') {
     pool = allCharacters.filter((c) => c.hanzi.length === 1);
+  } else if (selectedListId === 'compound_review') {
+    // STRICTLY 100% full match compounds (review compounds) only!
+    const userSingleCharSet = new Set<string>();
+    allCharacters.forEach((c) => {
+      if (c.hanzi.length === 1) userSingleCharSet.add(c.hanzi);
+    });
+    const saved = allCharacters.filter((c) => {
+      if (c.hanzi.length <= 1) return false;
+      return Array.from(c.hanzi).every((ch) => userSingleCharSet.has(ch));
+    });
+    const detected = detectCompoundWordsFromCharacters(allCharacters);
+    const fullMatch = detected.filter((dc) => dc.isFullMatch);
+    const converted = fullMatch.map((dc) => convertCompoundToCharacter(dc, ['compound_review']));
+
+    const map = new Map<string, Character>();
+    saved.forEach((c) => map.set(c.hanzi, c));
+    converted.forEach((c) => {
+      if (!map.has(c.hanzi)) map.set(c.hanzi, c);
+    });
+    pool = Array.from(map.values());
+  } else if (selectedListId === 'compound_expansion') {
+    // STRICTLY expansion compounds (words with new characters) only!
+    const detected = detectCompoundWordsFromCharacters(allCharacters);
+    const expansionMatch = detected.filter((dc) => dc.isExpansionMatch);
+    pool = expansionMatch.map((dc) => convertCompoundToCharacter(dc, ['compound_expansion']));
   } else if (selectedListId === 'all_compound') {
     const saved = allCharacters.filter((c) => c.hanzi.length > 1);
     const detected = detectCompoundWordsFromCharacters(allCharacters);
-    const detectedChars = detected.map((dc) => convertCompoundToCharacter(dc, ['hsk1']));
+    const detectedChars = detected.map((dc) => convertCompoundToCharacter(dc, ['all_compound']));
 
     const map = new Map<string, Character>();
     saved.forEach((c) => map.set(c.hanzi, c));
