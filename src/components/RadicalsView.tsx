@@ -15,6 +15,7 @@ import {
   Trophy,
   X,
   ExternalLink,
+  ArrowLeft,
 } from 'lucide-react';
 import { Character } from '../types';
 import {
@@ -30,6 +31,8 @@ interface RadicalsViewProps {
   onOpenTutor?: (context: string) => void;
   initialRadicalId?: string | null;
   onClearInitialRadical?: () => void;
+  sourceCharacter?: Character | null;
+  onReturnToCharacter?: (character: Character) => void;
 }
 
 export const RadicalsView: React.FC<RadicalsViewProps> = ({
@@ -38,6 +41,8 @@ export const RadicalsView: React.FC<RadicalsViewProps> = ({
   onOpenTutor,
   initialRadicalId,
   onClearInitialRadical,
+  sourceCharacter,
+  onReturnToCharacter,
 }) => {
   // Navigation tabs: 'my_radicals' | 'all_radicals' | 'quiz'
   const [activeTab, setActiveTab] = useState<'my_radicals' | 'all_radicals' | 'quiz'>('my_radicals');
@@ -185,6 +190,49 @@ export const RadicalsView: React.FC<RadicalsViewProps> = ({
 
   return (
     <div className="space-y-6">
+      {/* Return to Source Character Banner */}
+      {sourceCharacter && onReturnToCharacter && (
+        <div className="flex items-center justify-between p-3.5 bg-gradient-to-r from-cyan-950/90 via-slate-900 to-cyan-950/90 border border-cyan-500/40 rounded-2xl shadow-inner gap-3">
+          <div className="flex items-center gap-3 min-w-0">
+            <div className="p-2 bg-cyan-500/20 text-cyan-300 rounded-xl shrink-0">
+              <ArrowLeft className="w-4 h-4" />
+            </div>
+            <div className="min-w-0 text-xs">
+              <span className="text-slate-400 block text-[11px]">Đang tra cứu bộ thủ của chữ Hán:</span>
+              <div className="flex items-center gap-2 flex-wrap">
+                <span className="font-serif font-bold text-cyan-300 text-lg">
+                  {sourceCharacter.hanzi}
+                </span>
+                {sourceCharacter.pinyin && (
+                  <span className="font-mono text-cyan-400 font-semibold text-xs">
+                    ({sourceCharacter.pinyin})
+                  </span>
+                )}
+                {sourceCharacter.hanViet && (
+                  <span className="text-[10px] font-bold text-teal-300 bg-teal-950/60 px-1.5 py-0.2 rounded border border-teal-500/30 uppercase">
+                    {sourceCharacter.hanViet}
+                  </span>
+                )}
+                {sourceCharacter.meaning && (
+                  <span className="text-slate-300 truncate max-w-sm">
+                    - {sourceCharacter.meaning}
+                  </span>
+                )}
+              </div>
+            </div>
+          </div>
+          <button
+            type="button"
+            onClick={() => onReturnToCharacter(sourceCharacter)}
+            className="shrink-0 px-3.5 py-2 text-xs font-bold text-slate-950 bg-cyan-400 hover:bg-cyan-300 rounded-xl transition cursor-pointer shadow-md flex items-center gap-1.5 active:scale-95"
+            title={`Quay về chi tiết chữ ${sourceCharacter.hanzi}`}
+          >
+            <ArrowLeft className="w-3.5 h-3.5" />
+            <span>Quay về {sourceCharacter.hanzi}</span>
+          </button>
+        </div>
+      )}
+
       {/* Top Header */}
       <div className="flex flex-col md:flex-row md:items-end justify-between gap-4 pb-4 border-b border-slate-800/80">
         <div className="space-y-1">
@@ -572,12 +620,28 @@ export const RadicalsView: React.FC<RadicalsViewProps> = ({
                 </div>
               </div>
 
-              <button
-                onClick={handleCloseDetail}
-                className="p-1.5 text-slate-400 hover:text-slate-200 rounded-lg hover:bg-slate-800 transition cursor-pointer"
-              >
-                <X className="w-4 h-4" />
-              </button>
+              <div className="flex items-center gap-2">
+                {sourceCharacter && onReturnToCharacter && (
+                  <button
+                    type="button"
+                    onClick={() => {
+                      handleCloseDetail();
+                      onReturnToCharacter(sourceCharacter);
+                    }}
+                    className="flex items-center gap-1.5 px-3 py-1.5 text-xs font-bold text-cyan-300 hover:text-cyan-100 bg-cyan-950/80 hover:bg-cyan-900 border border-cyan-500/50 rounded-xl transition cursor-pointer shadow-sm active:scale-95 group"
+                    title={`Quay về chi tiết chữ Hán: ${sourceCharacter.hanzi}`}
+                  >
+                    <ArrowLeft className="w-3.5 h-3.5 text-cyan-400 group-hover:-translate-x-0.5 transition-transform" />
+                    <span>Quay về: <strong className="text-cyan-200">{sourceCharacter.hanzi}</strong></span>
+                  </button>
+                )}
+                <button
+                  onClick={handleCloseDetail}
+                  className="p-1.5 text-slate-400 hover:text-slate-200 rounded-lg hover:bg-slate-800 transition cursor-pointer"
+                >
+                  <X className="w-4 h-4" />
+                </button>
+              </div>
             </div>
 
             {/* Core Meaning & Philosophical Origin */}

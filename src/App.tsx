@@ -82,9 +82,18 @@ export default function App() {
   // Modals / Drawers
   const [selectedCharacter, setSelectedCharacter] = useState<Character | null>(null);
   const [focusedRadicalId, setFocusedRadicalId] = useState<string | null>(null);
+  const [sourceCharacterForRadical, setSourceCharacterForRadical] = useState<Character | null>(null);
+  const [previousViewBeforeRadical, setPreviousViewBeforeRadical] = useState<'lists' | 'study' | 'analytics' | 'grammar' | 'radicals'>('lists');
   const [isTutorOpen, setIsTutorOpen] = useState(false);
   const [tutorContextHanzi, setTutorContextHanzi] = useState<string | undefined>(undefined);
   const [isSettingsOpen, setIsSettingsOpen] = useState(false);
+
+  const handleReturnFromRadicalToCharacter = (char: Character) => {
+    setActiveView(previousViewBeforeRadical || 'lists');
+    setSelectedCharacter(char);
+    setFocusedRadicalId(null);
+    setSourceCharacterForRadical(null);
+  };
 
   // Study Setup Modal State
   const [isSetupModalOpen, setIsSetupModalOpen] = useState(false);
@@ -577,6 +586,8 @@ export default function App() {
               <RadicalsView
                 characters={characters}
                 initialRadicalId={focusedRadicalId}
+                sourceCharacter={sourceCharacterForRadical}
+                onReturnToCharacter={handleReturnFromRadicalToCharacter}
                 onClearInitialRadical={() => setFocusedRadicalId(null)}
                 onSelectCharacter={(char) => setSelectedCharacter(char)}
                 onOpenTutor={(context) => handleOpenTutorForHanzi(context)}
@@ -651,15 +662,24 @@ export default function App() {
           <CharacterDetailModal
             key="char-modal"
             character={selectedCharacter}
+            allCharacters={characters}
+            onSelectCharacter={(char) => setSelectedCharacter(char)}
             onClose={() => setSelectedCharacter(null)}
-            onUpdateCharacter={() => refreshAllData()}
+            onUpdateCharacter={(updated) => {
+              if (updated && selectedCharacter && updated.id === selectedCharacter.id) {
+                setSelectedCharacter(updated);
+              }
+              refreshAllData();
+            }}
             onOpenTutor={(hanzi) => handleOpenTutorForHanzi(hanzi)}
             onDeleteCharacter={(id) => {
               removeCharacter(id);
               refreshAllData();
             }}
-            onOpenRadicalView={(radId) => {
+            onOpenRadicalView={(radId, sourceChar) => {
               setFocusedRadicalId(radId);
+              setSourceCharacterForRadical(sourceChar || selectedCharacter);
+              setPreviousViewBeforeRadical(activeView);
               setActiveView('radicals');
             }}
           />

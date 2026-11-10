@@ -1,6 +1,6 @@
-import React, { useState } from 'react';
+import React, { useState, useEffect } from 'react';
 import { motion } from 'motion/react';
-import { X, Volume2, Sparkles, BookOpen, Layers, Edit3, Check, Loader2, ListPlus, Trash2, RefreshCw, ArrowRight } from 'lucide-react';
+import { X, Volume2, Sparkles, BookOpen, Layers, Edit3, Check, Loader2, ListPlus, Trash2, RefreshCw, ArrowRight, ArrowLeft } from 'lucide-react';
 import { Character } from '../types';
 import { StrokeWriterCanvas } from './StrokeWriterCanvas';
 import { speakChinese } from '../services/audio';
@@ -8,25 +8,75 @@ import { addCharacter, removeCharacter } from '../services/storage';
 import { lookupBuiltIn } from '../services/builtInDictionary';
 import { getApiUrl, isStaticHost } from '../services/apiClient';
 import { findRadicalInfo } from '../services/radicalsDatabase';
+import { DEFAULT_SRS } from '../services/dictionary';
+
+interface ConstituentInfo {
+  hanzi: string;
+  pinyin: string;
+  hanViet: string;
+  meaning: string;
+  radical?: string;
+  strokeCount?: number;
+  components?: string;
+  mnemonic?: string;
+  examples?: Array<{ sentence: string; pinyin: string; meaning: string }>;
+  compoundWords?: Array<{ word: string; pinyin: string; meaning: string }>;
+  isSaved?: boolean;
+}
 
 interface CharacterDetailModalProps {
   character: Character | null;
+  allCharacters?: Character[];
   onClose: () => void;
   onUpdateCharacter?: (updated?: Character) => void;
   onOpenTutor?: (hanzi: string) => void;
   onDeleteCharacter?: (id: string) => void;
-  onOpenRadicalView?: (radicalId: string) => void;
+  onOpenRadicalView?: (radicalId: string, sourceCharacter?: Character) => void;
+  onSelectCharacter?: (character: Character) => void;
 }
 
 export const CharacterDetailModal: React.FC<CharacterDetailModalProps> = ({
-  character,
+  character: propCharacter,
+  allCharacters,
   onClose,
   onUpdateCharacter,
   onOpenTutor,
   onDeleteCharacter,
   onOpenRadicalView,
+  onSelectCharacter,
 }) => {
-  if (!character) return null;
+  if (!propCharacter) return null;
+
+  // Track active character and history stack for back/forth navigation
+  const [activeCharacter, setActiveCharacter] = useState<Character>(propCharacter);
+  const [historyStack, setHistoryStack] = useState<Character[]>([]);
+
+  // Keep activeCharacter in sync when propCharacter changes from outside
+  useEffect(() => {
+    if (propCharacter && propCharacter.id !== activeCharacter.id && historyStack.length === 0) {
+      setActiveCharacter(propCharacter);
+    }
+  }, [propCharacter?.id, propCharacter?.hanzi]);
+
+  const character = activeCharacter;
+
+  const navigateToCharacter = (targetChar: Character) => {
+    setHistoryStack((prev) => [...prev, activeCharacter]);
+    setActiveCharacter(targetChar);
+    if (onSelectCharacter) {
+      onSelectCharacter(targetChar);
+    }
+  };
+
+  const handleGoBack = () => {
+    if (historyStack.length === 0) return;
+    const previousChar = historyStack[historyStack.length - 1];
+    setHistoryStack((prev) => prev.slice(0, prev.length - 1));
+    setActiveCharacter(previousChar);
+    if (onSelectCharacter) {
+      onSelectCharacter(previousChar);
+    }
+  };
 
   const [notes, setNotes] = useState(character.customNotes || '');
   const [isSavingNotes, setIsSavingNotes] = useState(false);
@@ -36,6 +86,228 @@ export const CharacterDetailModal: React.FC<CharacterDetailModalProps> = ({
   const [confirmingDelete, setConfirmingDelete] = useState(false);
   const [isRefreshingDetails, setIsRefreshingDetails] = useState(false);
   const [refreshSuccessMessage, setRefreshSuccessMessage] = useState('');
+
+  // Constituent single characters enrichment and saved state for compound words
+  const [enrichedConstituents, setEnrichedConstituents] = useState<Record<string, ConstituentInfo>>({});
+  const [enrichingConstituents, setEnrichingConstituents] = useState(false);
+  const [savedConstituents, setSavedConstituents] = useState<Record<string, boolean>>({});
+
+  // Sync state when active character changes
+  useEffect(() => {
+    setNotes(character.customNotes || '');
+    setAiMnemonics([]);
+    setConfirmingDelete(false);
+    setNotesSaved(false);
+  }, [character.id, character.hanzi]);
+
+  // Resolve constituent single character info using multi-tier fallback:
+  // 1. User vocabulary (allCharacters)
+  // 2. Dynamic cache (enrichedConstituents)
+  // 3. BUILT_IN_DICTIONARY
+  // 4. Kangxi Radicals Database
+  const resolveConstituentInfo = (ch: string): ConstituentInfo => {
+    // 1. User vocabulary
+    const savedChar = allCharacters?.find((c) => c.hanzi === ch);
+    if (savedChar && savedChar.meaning && savedChar.meaning !== 'Chữ đơn cấu thành') {
+      return {
+        hanzi: ch,
+        pinyin: savedChar.pinyin || '',
+        hanViet: savedChar.hanViet || '',
+        meaning: savedChar.meaning,
+        radical: savedChar.radical,
+        strokeCount: savedChar.strokeCount,
+        components: savedChar.components,
+        mnemonic: savedChar.mnemonic,
+        examples: savedChar.examples,
+        compoundWords: savedChar.compoundWords,
+        isSaved: true,
+      };
+    }
+
+    // 2. Dynamic cache
+    const dyn = enrichedConstituents[ch];
+    if (dyn && dyn.meaning && dyn.meaning !== 'Chữ đơn cấu thành') {
+      return {
+        ...dyn,
+        isSaved: savedConstituents[ch] || !!allCharacters?.some((c) => c.hanzi === ch),
+      };
+    }
+
+    // 3. Built-in dictionary
+    const dict = lookupBuiltIn(ch);
+    if (dict && dict.meaning) {
+      return {
+        hanzi: ch,
+        pinyin: dict.pinyin || '',
+        hanViet: dict.hanViet || '',
+        meaning: dict.meaning,
+        radical: dict.radical,
+        strokeCount: dict.strokeCount,
+        components: dict.components,
+        mnemonic: dict.mnemonic,
+        examples: dict.examples,
+        compoundWords: dict.compoundWords,
+        isSaved: savedConstituents[ch] || !!allCharacters?.some((c) => c.hanzi === ch),
+      };
+    }
+
+    // 4. Radicals database
+    const rad = findRadicalInfo(ch);
+    if (rad && rad.meaning) {
+      return {
+        hanzi: ch,
+        pinyin: rad.pinyin || '',
+        hanViet: rad.hanViet || '',
+        meaning: rad.meaning,
+        radical: `${rad.hanzi} (${rad.hanViet})`,
+        strokeCount: rad.strokeCount,
+        mnemonic: rad.associationTip || rad.description,
+        isSaved: savedConstituents[ch] || !!allCharacters?.some((c) => c.hanzi === ch),
+      };
+    }
+
+    return {
+      hanzi: ch,
+      pinyin: '',
+      hanViet: '',
+      meaning: '',
+      isSaved: savedConstituents[ch] || !!allCharacters?.some((c) => c.hanzi === ch),
+    };
+  };
+
+  // Auto-enrich any constituent characters lacking complete data
+  useEffect(() => {
+    if (!character || character.hanzi.length <= 1) return;
+
+    const chars = character.hanzi.split('');
+    const missing = chars.filter((ch) => {
+      const saved = allCharacters?.find((c) => c.hanzi === ch);
+      if (saved && saved.meaning && saved.meaning !== 'Chữ đơn cấu thành') return false;
+      if (enrichedConstituents[ch]?.meaning && enrichedConstituents[ch].meaning !== 'Chữ đơn cấu thành') return false;
+      const dict = lookupBuiltIn(ch);
+      if (dict && dict.meaning) return false;
+      const rad = findRadicalInfo(ch);
+      if (rad && rad.meaning) return false;
+      return true;
+    });
+
+    if (missing.length === 0) return;
+
+    let isMounted = true;
+    setEnrichingConstituents(true);
+
+    fetch(getApiUrl('/api/gemini/enrich'), {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ characters: missing }),
+    })
+      .then((res) => res.json())
+      .then((json) => {
+        if (!isMounted) return;
+        if (json.success && Array.isArray(json.data)) {
+          setEnrichedConstituents((prev) => {
+            const next = { ...prev };
+            json.data.forEach((item: any) => {
+              if (item && item.hanzi) {
+                next[item.hanzi] = {
+                  hanzi: item.hanzi,
+                  pinyin: item.pinyin || '',
+                  hanViet: item.hanViet || '',
+                  meaning: item.meaning || '',
+                  radical: item.radical,
+                  strokeCount: item.strokeCount,
+                  components: item.components,
+                  mnemonic: item.mnemonic,
+                  examples: item.examples,
+                  compoundWords: item.compoundWords,
+                };
+              }
+            });
+            return next;
+          });
+        }
+      })
+      .catch((err) => {
+        console.error('Failed to enrich constituent characters:', err);
+      })
+      .finally(() => {
+        if (isMounted) setEnrichingConstituents(false);
+      });
+
+    return () => {
+      isMounted = false;
+    };
+  }, [character.hanzi, allCharacters]);
+
+  const handleSaveConstituent = (info: ConstituentInfo, e: React.MouseEvent) => {
+    e.stopPropagation();
+    const charToAdd: Character = {
+      id: `char-${Date.now()}-${info.hanzi}`,
+      hanzi: info.hanzi,
+      pinyin: info.pinyin || 'chưa rõ',
+      hanViet: info.hanViet || '',
+      meaning: info.meaning || 'Từ vựng mới',
+      radical: info.radical || 'Chưa rõ',
+      strokeCount: info.strokeCount || 1,
+      components: info.components,
+      mnemonic: info.mnemonic,
+      examples: info.examples || [],
+      compoundWords: info.compoundWords || [],
+      listIds: ['single'],
+      createdAt: Date.now(),
+      srs: { ...DEFAULT_SRS },
+    };
+    addCharacter(charToAdd);
+    setSavedConstituents((prev) => ({ ...prev, [info.hanzi]: true }));
+    if (onUpdateCharacter) onUpdateCharacter();
+  };
+
+  const handleSelectConstituent = (info: ConstituentInfo) => {
+    const existing = allCharacters?.find((c) => c.hanzi === info.hanzi);
+    if (existing) {
+      navigateToCharacter(existing);
+    } else {
+      const tempChar: Character = {
+        id: `char-${Date.now()}-${info.hanzi}`,
+        hanzi: info.hanzi,
+        pinyin: info.pinyin || '',
+        hanViet: info.hanViet || '',
+        meaning: info.meaning || '',
+        radical: info.radical || 'Chưa rõ',
+        strokeCount: info.strokeCount || 1,
+        components: info.components,
+        mnemonic: info.mnemonic,
+        examples: info.examples || [],
+        compoundWords: info.compoundWords || [],
+        listIds: ['single'],
+        createdAt: Date.now(),
+        srs: { ...DEFAULT_SRS },
+      };
+      navigateToCharacter(tempChar);
+    }
+  };
+
+  const handleSelectCompoundWord = (cw: { word: string; pinyin: string; meaning: string }) => {
+    const existing = allCharacters?.find((c) => c.hanzi === cw.word);
+    if (existing) {
+      navigateToCharacter(existing);
+    } else {
+      const tempChar: Character = {
+        id: `char-${Date.now()}-${cw.word}`,
+        hanzi: cw.word,
+        pinyin: cw.pinyin || '',
+        hanViet: '',
+        meaning: cw.meaning || '',
+        radical: 'Chưa rõ',
+        strokeCount: cw.word.length,
+        components: cw.word.split('').join(' + '),
+        listIds: ['compound_review'],
+        createdAt: Date.now(),
+        srs: { ...DEFAULT_SRS },
+      };
+      navigateToCharacter(tempChar);
+    }
+  };
 
   const radicalInfo = findRadicalInfo(character.radical) || (character.hanzi.length === 1 ? findRadicalInfo(character.hanzi) : null);
 
@@ -178,9 +450,21 @@ export const CharacterDetailModal: React.FC<CharacterDetailModalProps> = ({
         {/* Modal Header */}
         <div className="flex items-center justify-between px-4 sm:px-6 py-3 sm:py-4 border-b border-slate-800/80 bg-slate-950/60">
           <div className="flex items-center gap-2">
-            <span className="text-xs font-mono px-2 py-0.5 rounded-md bg-emerald-500/20 text-emerald-300 border border-emerald-500/30">
-              Chữ Hán Chi Tiết
-            </span>
+            {historyStack.length > 0 ? (
+              <button
+                type="button"
+                onClick={handleGoBack}
+                className="flex items-center gap-1.5 px-3 py-1.5 text-xs font-bold text-cyan-300 hover:text-cyan-100 bg-cyan-950/80 hover:bg-cyan-900 border border-cyan-500/50 rounded-xl transition cursor-pointer shadow-sm active:scale-95 group"
+                title={`Quay về chữ trước đó: ${historyStack[historyStack.length - 1].hanzi}`}
+              >
+                <ArrowLeft className="w-3.5 h-3.5 text-cyan-400 group-hover:-translate-x-0.5 transition-transform" />
+                <span>Quay về: <strong className="text-cyan-200">{historyStack[historyStack.length - 1].hanzi}</strong></span>
+              </button>
+            ) : (
+              <span className="text-xs font-mono px-2 py-0.5 rounded-md bg-emerald-500/20 text-emerald-300 border border-emerald-500/30">
+                Chữ Hán Chi Tiết
+              </span>
+            )}
             <span className="text-xs text-slate-600">•</span>
             <span className="text-xs text-slate-400 font-mono">
               Độ thuộc: <span className="text-cyan-300 font-bold">{character.srs.masteryLevel}%</span>
@@ -207,6 +491,40 @@ export const CharacterDetailModal: React.FC<CharacterDetailModalProps> = ({
 
         {/* Modal Scroll Body */}
         <div className="flex-1 overflow-y-auto p-4 sm:p-6 space-y-5 sm:space-y-6">
+          {/* Breadcrumb banner if user navigated from another word (e.g. from a compound word) */}
+          {historyStack.length > 0 && (
+            <div className="flex items-center justify-between p-3 bg-gradient-to-r from-cyan-950/80 via-slate-900/90 to-cyan-950/80 border border-cyan-500/40 rounded-2xl shadow-inner gap-3">
+              <div className="flex items-center gap-2.5 min-w-0">
+                <div className="p-1.5 bg-cyan-500/20 text-cyan-300 rounded-xl shrink-0">
+                  <ArrowLeft className="w-4 h-4" />
+                </div>
+                <div className="min-w-0">
+                  <span className="text-[11px] text-slate-400 block">Đang xem chữ đơn từ:</span>
+                  <div className="flex items-center gap-1.5 flex-wrap">
+                    <span className="font-serif font-bold text-cyan-300 text-base">
+                      {historyStack[historyStack.length - 1].hanzi}
+                    </span>
+                    {historyStack[historyStack.length - 1].pinyin && (
+                      <span className="font-mono text-cyan-400 text-xs">
+                        ({historyStack[historyStack.length - 1].pinyin})
+                      </span>
+                    )}
+                    <span className="text-slate-300 text-xs truncate max-w-xs">
+                      - {historyStack[historyStack.length - 1].meaning}
+                    </span>
+                  </div>
+                </div>
+              </div>
+              <button
+                type="button"
+                onClick={handleGoBack}
+                className="shrink-0 px-3 py-1.5 text-xs font-bold text-slate-950 bg-cyan-400 hover:bg-cyan-300 rounded-xl transition cursor-pointer shadow-md flex items-center gap-1.5 active:scale-95"
+              >
+                <ArrowLeft className="w-3.5 h-3.5" />
+                <span>Quay về {historyStack[historyStack.length - 1].hanzi}</span>
+              </button>
+            </div>
+          )}
           {/* Notification / Incomplete Banner */}
           {refreshSuccessMessage && (
             <div className="p-3 bg-emerald-950/60 border border-emerald-500/40 rounded-xl text-xs text-emerald-300 flex items-center gap-2">
@@ -275,7 +593,7 @@ export const CharacterDetailModal: React.FC<CharacterDetailModalProps> = ({
                         type="button"
                         onClick={() => {
                           onClose();
-                          onOpenRadicalView(radicalInfo.id);
+                          onOpenRadicalView(radicalInfo.id, character);
                         }}
                         className="text-[10px] text-cyan-400 hover:text-cyan-300 font-semibold cursor-pointer underline"
                       >
@@ -329,7 +647,7 @@ export const CharacterDetailModal: React.FC<CharacterDetailModalProps> = ({
                     type="button"
                     onClick={() => {
                       onClose();
-                      onOpenRadicalView(radicalInfo.id);
+                      onOpenRadicalView(radicalInfo.id, character);
                     }}
                     className="text-[11px] text-cyan-400 hover:text-cyan-300 font-semibold cursor-pointer flex items-center gap-1"
                   >
@@ -366,41 +684,145 @@ export const CharacterDetailModal: React.FC<CharacterDetailModalProps> = ({
 
           {/* Constituent Single Characters for Compound Words */}
           {character.hanzi.length > 1 && (
-            <div className="space-y-2">
-              <h4 className="text-xs font-bold text-slate-400 uppercase tracking-wider flex items-center gap-1.5 font-mono">
-                <Layers className="w-3.5 h-3.5 text-cyan-400" />
-                Chữ Đơn Cấu Thành Từ Ghép Này
-              </h4>
-              <div className="grid grid-cols-1 sm:grid-cols-2 gap-2.5">
+            <div className="space-y-2.5">
+              <div className="flex items-center justify-between">
+                <h4 className="text-xs font-bold text-slate-400 uppercase tracking-wider flex items-center gap-1.5 font-mono">
+                  <Layers className="w-3.5 h-3.5 text-cyan-400" />
+                  Chữ Đơn Cấu Thành Từ Ghép Này ({character.hanzi.length} chữ)
+                </h4>
+                {enrichingConstituents && (
+                  <span className="text-[11px] text-cyan-400 flex items-center gap-1 font-mono">
+                    <Loader2 className="w-3 h-3 animate-spin" /> Tra cứu chi tiết...
+                  </span>
+                )}
+              </div>
+
+              <div className="grid grid-cols-1 gap-2.5">
                 {character.hanzi.split('').map((ch: string, idx: number) => {
-                  const dict = lookupBuiltIn(ch);
+                  const info = resolveConstituentInfo(ch);
+                  const isSaved = info.isSaved || savedConstituents[ch];
+                  const hasPinyin = !!info.pinyin;
+                  const hasHanViet = !!info.hanViet;
+                  const hasMeaning = !!info.meaning && info.meaning !== 'Chữ đơn cấu thành';
+
                   return (
                     <div
                       key={idx}
-                      className="p-3 bg-slate-950/80 border border-cyan-500/20 rounded-xl flex items-center justify-between gap-3 shadow-inner"
+                      onClick={() => onSelectCharacter && handleSelectConstituent(info)}
+                      className={`p-3 bg-gradient-to-r from-slate-950/90 via-slate-900/90 to-slate-950/90 border border-slate-800 hover:border-cyan-500/40 rounded-2xl transition-all shadow-inner group ${
+                        onSelectCharacter ? 'cursor-pointer hover:shadow-lg hover:shadow-cyan-950/30' : ''
+                      }`}
                     >
-                      <div className="flex items-center gap-3">
-                        <span className="text-3xl font-serif font-bold text-cyan-300">{ch}</span>
-                        <div>
-                          <div className="flex items-center gap-1.5">
-                            <span className="text-xs font-mono font-bold text-cyan-400">{dict?.pinyin || ''}</span>
-                            {dict?.hanViet && (
-                              <span className="text-[10px] font-bold text-teal-300 bg-teal-950/60 px-1.5 py-0.2 rounded border border-teal-500/30 uppercase">
-                                {dict.hanViet}
+                      <div className="flex items-start gap-3.5">
+                        {/* Hanzi Box */}
+                        <div className="shrink-0 flex flex-col items-center">
+                          <div className="w-13 h-13 rounded-xl bg-slate-900 border border-cyan-500/30 flex items-center justify-center text-3xl font-serif font-bold text-cyan-300 shadow-inner group-hover:border-cyan-400 group-hover:scale-105 transition-all">
+                            {ch}
+                          </div>
+                          {info.strokeCount ? (
+                            <span className="mt-1 text-[10px] font-mono text-slate-400">
+                              {info.strokeCount} nét
+                            </span>
+                          ) : null}
+                        </div>
+
+                        {/* Character Details */}
+                        <div className="flex-1 min-w-0 space-y-1">
+                          {/* Row 1: Pinyin, Hán Việt, Radical, Status */}
+                          <div className="flex flex-wrap items-center gap-1.5">
+                            {hasPinyin ? (
+                              <span className="text-sm font-mono font-bold text-cyan-300">
+                                {info.pinyin}
+                              </span>
+                            ) : (
+                              <span className="text-xs font-mono text-slate-500 italic">
+                                {enrichingConstituents ? 'Đang tải...' : 'Chưa có pinyin'}
+                              </span>
+                            )}
+
+                            {hasHanViet && (
+                              <span className="text-[10px] font-bold text-teal-300 bg-teal-950/70 px-1.5 py-0.5 rounded border border-teal-500/40 uppercase tracking-wide">
+                                {info.hanViet}
+                              </span>
+                            )}
+
+                            {info.radical && (
+                              <span className="text-[10px] font-mono text-slate-400 bg-slate-900/90 px-1.5 py-0.5 rounded border border-slate-800">
+                                Bộ: {info.radical}
+                              </span>
+                            )}
+
+                            {isSaved && (
+                              <span className="text-[10px] font-semibold text-emerald-400 bg-emerald-950/60 px-1.5 py-0.5 rounded border border-emerald-500/30 flex items-center gap-0.5">
+                                <Check className="w-2.5 h-2.5" /> Đã lưu
                               </span>
                             )}
                           </div>
-                          <p className="text-xs text-slate-300 line-clamp-1">{dict?.meaning || 'Chữ đơn cấu thành'}</p>
+
+                          {/* Row 2: Vietnamese Meaning */}
+                          <div className="text-xs sm:text-sm text-slate-200 font-medium leading-relaxed">
+                            {hasMeaning ? (
+                              info.meaning
+                            ) : enrichingConstituents ? (
+                              <span className="text-xs text-slate-400 italic flex items-center gap-1.5">
+                                <Loader2 className="w-3 h-3 animate-spin text-cyan-400" />
+                                Đang tra cứu nghĩa và âm Hán Việt...
+                              </span>
+                            ) : (
+                              <span className="text-xs text-slate-400 italic">Đang cập nhật thông tin nghĩa</span>
+                            )}
+                          </div>
+
+                          {/* Row 3: Components / Breakdown if available */}
+                          {info.components && (
+                            <p className="text-[11px] font-mono text-slate-400">
+                              <span className="text-slate-500">Chiết tự:</span> {info.components}
+                            </p>
+                          )}
+                        </div>
+
+                        {/* Action buttons */}
+                        <div className="shrink-0 flex items-center gap-1 self-center">
+                          <button
+                            type="button"
+                            onClick={(e) => {
+                              e.stopPropagation();
+                              speakChinese(ch);
+                            }}
+                            className="p-2 text-slate-400 hover:text-cyan-300 bg-slate-900 rounded-xl border border-slate-800 transition cursor-pointer"
+                            title="Phát âm chữ này"
+                          >
+                            <Volume2 className="w-4 h-4" />
+                          </button>
+
+                          {!isSaved ? (
+                            <button
+                              type="button"
+                              onClick={(e) => handleSaveConstituent(info, e)}
+                              className="px-2.5 py-1.5 text-xs font-semibold text-cyan-300 bg-cyan-950/80 hover:bg-cyan-900 border border-cyan-500/30 rounded-xl flex items-center gap-1 transition cursor-pointer"
+                              title="Lưu chữ đơn này vào danh sách từ vựng cá nhân"
+                            >
+                              <ListPlus className="w-3.5 h-3.5" />
+                              <span className="hidden sm:inline">Lưu</span>
+                            </button>
+                          ) : (
+                            onSelectCharacter && (
+                              <button
+                                type="button"
+                                onClick={(e) => {
+                                  e.stopPropagation();
+                                  handleSelectConstituent(info);
+                                }}
+                                className="px-2.5 py-1.5 text-xs font-semibold text-slate-300 bg-slate-900 hover:bg-slate-800 border border-slate-800 rounded-xl flex items-center gap-1 transition cursor-pointer group-hover:text-cyan-300 group-hover:border-cyan-500/30"
+                                title="Xem chi tiết chữ này"
+                              >
+                                <span className="hidden sm:inline">Chi tiết</span>
+                                <ArrowRight className="w-3.5 h-3.5" />
+                              </button>
+                            )
+                          )}
                         </div>
                       </div>
-                      <button
-                        type="button"
-                        onClick={() => speakChinese(ch)}
-                        className="p-1.5 text-slate-400 hover:text-cyan-300 bg-slate-900 rounded-lg border border-slate-800 transition cursor-pointer"
-                        title="Phát âm chữ đơn này"
-                      >
-                        <Volume2 className="w-3.5 h-3.5" />
-                      </button>
                     </div>
                   );
                 })}
@@ -489,18 +911,33 @@ export const CharacterDetailModal: React.FC<CharacterDetailModalProps> = ({
               </h4>
               <div className="grid grid-cols-1 sm:grid-cols-2 gap-2">
                 {character.compoundWords.map((cw, i) => (
-                  <div key={i} className="p-2.5 bg-slate-950/80 border border-slate-800 rounded-xl flex items-center justify-between">
+                  <div
+                    key={i}
+                    onClick={() => handleSelectCompoundWord(cw)}
+                    className="p-2.5 bg-slate-950/80 hover:bg-slate-900 border border-slate-800 hover:border-cyan-500/40 rounded-xl flex items-center justify-between cursor-pointer group transition shadow-inner"
+                    title="Bấm để xem chi tiết từ ghép này"
+                  >
                     <div>
-                      <span className="text-lg font-serif font-semibold text-slate-100 pr-2">{cw.word}</span>
+                      <span className="text-lg font-serif font-semibold text-slate-100 group-hover:text-cyan-300 pr-2 transition-colors">
+                        {cw.word}
+                      </span>
                       <span className="text-xs font-mono text-cyan-400">{cw.pinyin}</span>
-                      <p className="text-xs text-slate-300">{cw.meaning}</p>
+                      <p className="text-xs text-slate-300 line-clamp-1">{cw.meaning}</p>
                     </div>
-                    <button
-                      onClick={() => speakChinese(cw.word)}
-                      className="p-1 text-slate-400 hover:text-cyan-300 transition cursor-pointer"
-                    >
-                      <Volume2 className="w-3.5 h-3.5" />
-                    </button>
+                    <div className="flex items-center gap-1">
+                      <button
+                        type="button"
+                        onClick={(e) => {
+                          e.stopPropagation();
+                          speakChinese(cw.word);
+                        }}
+                        className="p-1.5 text-slate-400 hover:text-cyan-300 bg-slate-900 rounded-lg border border-slate-800 transition cursor-pointer"
+                        title="Nghe phát âm"
+                      >
+                        <Volume2 className="w-3.5 h-3.5" />
+                      </button>
+                      <ArrowRight className="w-3.5 h-3.5 text-slate-600 group-hover:text-cyan-400 transition-colors" />
+                    </div>
                   </div>
                 ))}
               </div>

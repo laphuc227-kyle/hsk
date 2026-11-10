@@ -8,6 +8,7 @@ import { addCharacter, addReviewLog } from '../services/storage';
 import { speakChinese } from '../services/audio';
 import { StrokeWriterCanvas } from './StrokeWriterCanvas';
 import { checkPinyinAnswer } from '../utils/pinyinUtils';
+import { lookupBuiltIn } from '../services/builtInDictionary';
 
 interface StudySessionProps {
   mode: StudySessionMode;
@@ -152,6 +153,31 @@ export const StudySession: React.FC<StudySessionProps> = ({
 
   const currentQ = questions[currentIndex];
 
+  // Helper to retrieve detailed pinyin and meaning for option cards
+  const getOptionInfo = (opt: string) => {
+    if (currentQ?.clozeSentence?.optionsDetail) {
+      const found = currentQ.clozeSentence.optionsDetail.find((d) => d.word === opt);
+      if (found) return found;
+    }
+    const char = allCharacters.find((c) => c.hanzi === opt);
+    if (char) {
+      return {
+        word: char.hanzi,
+        pinyin: char.pinyin,
+        meaning: char.meaning,
+      };
+    }
+    const dict = lookupBuiltIn(opt);
+    if (dict) {
+      return {
+        word: dict.hanzi,
+        pinyin: dict.pinyin,
+        meaning: dict.meaning,
+      };
+    }
+    return null;
+  };
+
   useEffect(() => {
     setFlashcardFlipped(false);
     setIsPracticingStrokeOnCard(false);
@@ -179,6 +205,31 @@ export const StudySession: React.FC<StudySessionProps> = ({
     const handleKeyDown = (e: KeyboardEvent) => {
       if (['INPUT', 'TEXTAREA', 'SELECT'].includes((e.target as HTMLElement)?.tagName)) {
         return;
+      }
+
+      // Advance to next question on Space or Enter when answered
+      if (isAnswered) {
+        if (e.code === 'Space' || e.key === ' ' || e.key === 'Enter') {
+          e.preventDefault();
+          handleNextQuestion();
+          return;
+        }
+      }
+
+      // Quick select options A/B/C/D or 1/2/3/4 when question has options and not yet answered
+      if (!isAnswered && currentQ?.options && currentQ.options.length > 0) {
+        const key = e.key.toLowerCase();
+        let optIdx = -1;
+        if (key === '1' || key === 'a') optIdx = 0;
+        else if (key === '2' || key === 'b') optIdx = 1;
+        else if (key === '3' || key === 'c') optIdx = 2;
+        else if (key === '4' || key === 'd') optIdx = 3;
+
+        if (optIdx >= 0 && optIdx < currentQ.options.length) {
+          e.preventDefault();
+          handleSelectOption(currentQ.options[optIdx]);
+          return;
+        }
       }
 
       if (mode === 'quick_flashcard' || currentQ?.type === 'flashcard') {
@@ -212,7 +263,7 @@ export const StudySession: React.FC<StudySessionProps> = ({
 
     window.addEventListener('keydown', handleKeyDown);
     return () => window.removeEventListener('keydown', handleKeyDown);
-  }, [currentQ, flashcardFlipped, autoPlayAudio]);
+  }, [currentQ, flashcardFlipped, autoPlayAudio, isAnswered]);
 
   const handlePlayAudio = () => {
     if (currentQ?.audioText) {
@@ -1381,19 +1432,23 @@ export const StudySession: React.FC<StudySessionProps> = ({
                 <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
                   {currentQ.options?.map((option, idx) => {
                     const letter = String.fromCharCode(65 + idx);
-                    let btnClass = 'bg-slate-950/80 hover:bg-slate-800/90 border-slate-800 text-slate-100 hover:border-violet-500/50';
+                    const optDetail = getOptionInfo(option);
+                    const isCorrectOpt = option === currentQ.correctAnswer;
+                    const isSelectedOpt = option === selectedOption;
+
+                    let btnClass = 'bg-slate-950/80 hover:bg-slate-800/90 border-slate-800 text-slate-100 hover:border-violet-500/50 shadow-sm';
                     let badgeClass = 'bg-slate-800 text-slate-400 border-slate-700';
 
                     if (isAnswered) {
-                      if (option === currentQ.correctAnswer) {
-                        btnClass = 'bg-emerald-500/20 border-emerald-500 text-emerald-200 font-bold shadow-md shadow-emerald-500/10';
-                        badgeClass = 'bg-emerald-500/30 text-emerald-300 border-emerald-500/40';
-                      } else if (option === selectedOption) {
-                        btnClass = 'bg-rose-500/20 border-rose-500 text-rose-200 font-bold shadow-md shadow-rose-500/10';
-                        badgeClass = 'bg-rose-500/30 text-rose-300 border-rose-500/40';
+                      if (isCorrectOpt) {
+                        btnClass = 'bg-emerald-950/50 border-emerald-500/80 text-emerald-100 shadow-md shadow-emerald-500/15 ring-1 ring-emerald-500/40';
+                        badgeClass = 'bg-emerald-500/30 text-emerald-300 border-emerald-500/50';
+                      } else if (isSelectedOpt) {
+                        btnClass = 'bg-rose-950/50 border-rose-500/80 text-rose-100 shadow-md shadow-rose-500/15 ring-1 ring-rose-500/40';
+                        badgeClass = 'bg-rose-500/30 text-rose-300 border-rose-500/50';
                       } else {
-                        btnClass = 'bg-slate-950/40 border-slate-900 text-slate-600 opacity-40';
-                        badgeClass = 'bg-slate-900 text-slate-700 border-slate-900';
+                        btnClass = 'bg-slate-950/70 border-slate-800/90 text-slate-300 hover:border-slate-700';
+                        badgeClass = 'bg-slate-900 text-slate-400 border-slate-800';
                       }
                     }
 
@@ -1404,22 +1459,75 @@ export const StudySession: React.FC<StudySessionProps> = ({
                         whileTap={!isAnswered ? { scale: 0.99 } : undefined}
                         onClick={() => handleSelectOption(option)}
                         disabled={isAnswered}
-                        className={`p-4 rounded-2xl border text-left transition flex items-center justify-between cursor-pointer ${btnClass}`}
+                        className={`p-4 rounded-2xl border text-left transition-all flex flex-col justify-between cursor-pointer ${btnClass}`}
                       >
-                        <div className="flex items-center gap-3">
-                          <span className={`w-8 h-8 rounded-xl border flex items-center justify-center text-xs font-mono font-bold shrink-0 ${badgeClass}`}>
-                            {letter}
-                          </span>
-                          <span className="text-xl sm:text-2xl font-serif font-bold tracking-wider">
-                            {option}
-                          </span>
+                        <div className="flex items-center justify-between gap-2 w-full">
+                          <div className="flex items-center gap-3">
+                            <span className={`w-8 h-8 rounded-xl border flex items-center justify-center text-xs font-mono font-bold shrink-0 ${badgeClass}`}>
+                              {letter}
+                            </span>
+                            <div className="flex items-baseline gap-2 flex-wrap">
+                              <span className="text-xl sm:text-2xl font-serif font-bold tracking-wider">
+                                {option}
+                              </span>
+                              {isAnswered && optDetail?.pinyin && (
+                                <span className="font-mono text-xs text-cyan-300 font-medium">
+                                  {optDetail.pinyin}
+                                </span>
+                              )}
+                            </div>
+                          </div>
+
+                          <div className="flex items-center gap-1.5 shrink-0">
+                            {isAnswered && (
+                              <button
+                                type="button"
+                                onClick={(e) => {
+                                  e.stopPropagation();
+                                  speakChinese(option);
+                                }}
+                                className="p-1.5 text-slate-400 hover:text-cyan-300 bg-slate-900/80 hover:bg-slate-800 rounded-lg border border-slate-700/60 transition cursor-pointer"
+                                title="Nghe phát âm từ này"
+                              >
+                                <Volume2 className="w-3.5 h-3.5" />
+                              </button>
+                            )}
+
+                            {isAnswered && isCorrectOpt && (
+                              <span className="px-2 py-0.5 rounded-lg bg-emerald-500/20 text-emerald-300 border border-emerald-500/40 text-[11px] font-bold flex items-center gap-1">
+                                <CheckCircle className="w-3.5 h-3.5 text-emerald-400" />
+                                <span className="hidden sm:inline">Đáp án đúng</span>
+                              </span>
+                            )}
+                            {isAnswered && isSelectedOpt && !isCorrectOpt && (
+                              <span className="px-2 py-0.5 rounded-lg bg-rose-500/20 text-rose-300 border border-rose-500/40 text-[11px] font-bold flex items-center gap-1">
+                                <XCircle className="w-3.5 h-3.5 text-rose-400" />
+                                <span className="hidden sm:inline">Bạn đã chọn</span>
+                              </span>
+                            )}
+                          </div>
                         </div>
 
-                        {isAnswered && option === currentQ.correctAnswer && (
-                          <CheckCircle className="w-5 h-5 text-emerald-400 shrink-0" />
-                        )}
-                        {isAnswered && option === selectedOption && option !== currentQ.correctAnswer && (
-                          <XCircle className="w-5 h-5 text-rose-400 shrink-0" />
+                        {/* Meaning & details for this option displayed directly in its box */}
+                        {isAnswered && optDetail?.meaning && (
+                          <motion.div
+                            initial={{ opacity: 0, height: 0 }}
+                            animate={{ opacity: 1, height: 'auto' }}
+                            className={`w-full mt-2.5 pt-2 border-t text-xs leading-relaxed ${
+                              isCorrectOpt
+                                ? 'border-emerald-500/30 text-emerald-200'
+                                : isSelectedOpt
+                                ? 'border-rose-500/30 text-rose-200'
+                                : 'border-slate-800/80 text-slate-300'
+                            }`}
+                          >
+                            <span className="font-semibold text-slate-400 text-[11px] mr-1.5 uppercase tracking-wide">
+                              Nghĩa:
+                            </span>
+                            <span className="font-sans">
+                              {optDetail.meaning}
+                            </span>
+                          </motion.div>
                         )}
                       </motion.button>
                     );
@@ -1431,14 +1539,24 @@ export const StudySession: React.FC<StudySessionProps> = ({
             /* Question Type: Multiple Choice */
             <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
               {currentQ.options.map((option, idx) => {
+                const letter = String.fromCharCode(65 + idx);
+                const optDetail = getOptionInfo(option);
+                const isCorrectOpt = option === currentQ.correctAnswer;
+                const isSelectedOpt = option === selectedOption;
+
                 let btnClass = 'bg-slate-950/80 hover:bg-slate-800 border-slate-800 text-slate-200';
+                let badgeClass = 'bg-slate-800 text-slate-400 border-slate-700';
+
                 if (isAnswered) {
-                  if (option === currentQ.correctAnswer) {
-                    btnClass = 'bg-emerald-500/20 border-emerald-500 text-emerald-300 font-bold';
-                  } else if (option === selectedOption) {
-                    btnClass = 'bg-rose-500/20 border-rose-500 text-rose-300 font-bold';
+                  if (isCorrectOpt) {
+                    btnClass = 'bg-emerald-950/50 border-emerald-500/80 text-emerald-100 shadow-md ring-1 ring-emerald-500/40 font-bold';
+                    badgeClass = 'bg-emerald-500/30 text-emerald-300 border-emerald-500/50';
+                  } else if (isSelectedOpt) {
+                    btnClass = 'bg-rose-950/50 border-rose-500/80 text-rose-100 shadow-md ring-1 ring-rose-500/40 font-bold';
+                    badgeClass = 'bg-rose-500/30 text-rose-300 border-rose-500/50';
                   } else {
-                    btnClass = 'bg-slate-950/40 border-slate-900 text-slate-600 opacity-50';
+                    btnClass = 'bg-slate-950/70 border-slate-800/90 text-slate-300';
+                    badgeClass = 'bg-slate-900 text-slate-400 border-slate-800';
                   }
                 }
 
@@ -1449,14 +1567,42 @@ export const StudySession: React.FC<StudySessionProps> = ({
                     whileTap={!isAnswered ? { scale: 0.99 } : undefined}
                     onClick={() => handleSelectOption(option)}
                     disabled={isAnswered}
-                    className={`p-4 rounded-xl border text-sm text-left transition flex items-center justify-between cursor-pointer ${btnClass}`}
+                    className={`p-4 rounded-xl border text-sm text-left transition-all flex flex-col justify-between cursor-pointer ${btnClass}`}
                   >
-                    <span className="font-medium">{option}</span>
-                    {isAnswered && option === currentQ.correctAnswer && (
-                      <CheckCircle className="w-4 h-4 text-emerald-400 shrink-0" />
-                    )}
-                    {isAnswered && option === selectedOption && option !== currentQ.correctAnswer && (
-                      <XCircle className="w-4 h-4 text-rose-400 shrink-0" />
+                    <div className="flex items-center justify-between gap-2 w-full">
+                      <div className="flex items-center gap-2.5">
+                        <span className={`w-7 h-7 rounded-lg border flex items-center justify-center text-xs font-mono font-bold shrink-0 ${badgeClass}`}>
+                          {letter}
+                        </span>
+                        <span className="font-medium text-base sm:text-lg">{option}</span>
+                      </div>
+                      <div className="flex items-center gap-1.5 shrink-0">
+                        {isAnswered && (
+                          <button
+                            type="button"
+                            onClick={(e) => {
+                              e.stopPropagation();
+                              speakChinese(option);
+                            }}
+                            className="p-1 text-slate-400 hover:text-cyan-300 bg-slate-900/80 hover:bg-slate-800 rounded-lg border border-slate-700/60 transition cursor-pointer"
+                            title="Nghe phát âm"
+                          >
+                            <Volume2 className="w-3.5 h-3.5" />
+                          </button>
+                        )}
+                        {isAnswered && isCorrectOpt && (
+                          <CheckCircle className="w-4 h-4 text-emerald-400 shrink-0" />
+                        )}
+                        {isAnswered && isSelectedOpt && !isCorrectOpt && (
+                          <XCircle className="w-4 h-4 text-rose-400 shrink-0" />
+                        )}
+                      </div>
+                    </div>
+                    {isAnswered && optDetail && optDetail.meaning && optDetail.meaning !== option && (
+                      <div className="w-full mt-2 pt-1.5 border-t border-slate-800/80 text-xs text-slate-300 font-normal">
+                        {optDetail.pinyin && <span className="font-mono text-cyan-400 mr-1.5 font-medium">[{optDetail.pinyin}]</span>}
+                        <span>{optDetail.meaning}</span>
+                      </div>
                     )}
                   </motion.button>
                 );
@@ -1486,121 +1632,71 @@ export const StudySession: React.FC<StudySessionProps> = ({
             </div>
           )}
 
-          {/* Answer Feedback & Explanation Box */}
+          {/* Answer Feedback & Navigation Bar */}
           <AnimatePresence>
             {isAnswered && (
               <motion.div
-                initial={{ opacity: 0, y: 15 }}
+                initial={{ opacity: 0, y: 12 }}
                 animate={{ opacity: 1, y: 0 }}
-                exit={{ opacity: 0, y: 10 }}
-                transition={{ duration: 0.25, ease: [0.22, 1, 0.36, 1] }}
-                className={`p-4 rounded-xl border space-y-2 ${
+                exit={{ opacity: 0, y: 8 }}
+                transition={{ duration: 0.22, ease: [0.22, 1, 0.36, 1] }}
+                className={`p-4 rounded-2xl border flex flex-col sm:flex-row sm:items-center justify-between gap-3 shadow-xl backdrop-blur-md ${
                   isCorrect
-                    ? 'bg-emerald-950/40 border-emerald-500/40 text-emerald-200'
-                    : 'bg-rose-950/40 border-rose-500/40 text-rose-200'
+                    ? 'bg-emerald-950/45 border-emerald-500/40 text-emerald-200'
+                    : 'bg-rose-950/45 border-rose-500/40 text-rose-200'
                 }`}
               >
-                <div className="flex items-center justify-between">
-                  <span className="text-xs font-bold uppercase tracking-wider flex items-center gap-1.5">
-                    {isCorrect ? (
-                      <>
-                        <CheckCircle className="w-4 h-4 text-emerald-400" /> Đúng rồi!
-                      </>
-                    ) : (
-                      <>
-                        <XCircle className="w-4 h-4 text-rose-400" /> Chưa chính xác
-                      </>
-                    )}
-                  </span>
+                <div className="flex items-center gap-3">
+                  <div className={`p-2.5 rounded-xl border shrink-0 ${
+                    isCorrect
+                      ? 'bg-emerald-500/20 border-emerald-500/40 text-emerald-400'
+                      : 'bg-rose-500/20 border-rose-500/40 text-rose-400'
+                  }`}>
+                    {isCorrect ? <CheckCircle className="w-5 h-5" /> : <XCircle className="w-5 h-5" />}
+                  </div>
 
-                  <button
-                    onClick={() => onOpenCharacterDetail(currentQ.character)}
-                    className="text-xs text-cyan-300 hover:text-cyan-200 underline font-medium cursor-pointer"
-                  >
-                    Xem chi tiết chữ
-                  </button>
-                </div>
-
-                {/* Sentence Cloze Detailed Comparative Breakdown */}
-                {currentQ.clozeSentence ? (
-                  <div className="space-y-3 pt-2 border-t border-slate-800/80">
-                    <div className="p-3 bg-slate-950/70 rounded-xl border border-slate-800/80 space-y-1.5">
-                      <div className="flex items-center justify-between">
-                        <span className="text-[11px] font-bold text-slate-400 uppercase tracking-wider">
-                          Câu hoàn chỉnh & Dịch nghĩa:
-                        </span>
+                  <div className="space-y-0.5">
+                    <div className="flex items-center gap-2">
+                      <span className="text-sm font-bold tracking-tight">
+                        {isCorrect ? 'Chính xác! (+10 điểm)' : 'Chưa chính xác'}
+                      </span>
+                      {currentQ.character && (
                         <button
                           type="button"
-                          onClick={handlePlayAudio}
-                          className="flex items-center gap-1 text-[11px] text-cyan-400 hover:text-cyan-300 font-medium cursor-pointer"
+                          onClick={() => onOpenCharacterDetail(currentQ.character)}
+                          className="text-xs text-cyan-300 hover:text-cyan-200 underline font-medium cursor-pointer ml-1"
                         >
-                          <Volume2 className="w-3.5 h-3.5" />
-                          <span>Nghe cả câu</span>
+                          Chi tiết chữ
                         </button>
-                      </div>
-                      <p className="text-base sm:text-lg font-serif font-bold text-slate-100 tracking-wide">
-                        {currentQ.clozeSentence.fullSentence.replace(/[a-zA-Z]+/g, '').replace(/\s+/g, '').trim()}
-                      </p>
-                      <p className="text-xs font-mono text-cyan-400">
-                        {currentQ.clozeSentence.pinyin.replace(/\b(association|mnemonic|example)\b/gi, '').replace(/\s+/g, ' ').trim()}
-                      </p>
-                      <p className="text-xs text-slate-300">
-                        {currentQ.clozeSentence.meaning}
-                      </p>
+                      )}
                     </div>
 
-                    {/* Breakdown of 4 Options */}
-                    {currentQ.clozeSentence.optionsDetail && currentQ.clozeSentence.optionsDetail.length > 0 && (
-                      <div className="space-y-1.5">
-                        <span className="text-[11px] font-bold text-slate-400 uppercase tracking-wider">
-                          Phân biệt 4 đáp án thử thách:
-                        </span>
-                        <div className="grid grid-cols-1 sm:grid-cols-2 gap-2">
-                          {currentQ.clozeSentence.optionsDetail.map((opt, i) => {
-                            const isCorrectOpt = opt.word === currentQ.correctAnswer;
-                            const isChosen = opt.word === selectedOption;
-                            return (
-                              <div
-                                key={i}
-                                className={`p-2.5 rounded-xl border text-xs space-y-1 ${
-                                  isCorrectOpt
-                                    ? 'bg-emerald-500/15 border-emerald-500/40 text-emerald-200'
-                                    : isChosen
-                                    ? 'bg-rose-500/15 border-rose-500/40 text-rose-200'
-                                    : 'bg-slate-950/60 border-slate-800/80 text-slate-300'
-                                }`}
-                              >
-                                <div className="flex items-center justify-between">
-                                  <span className="font-serif font-bold text-sm">
-                                    {opt.word}
-                                    {isCorrectOpt && (
-                                      <span className="ml-1.5 text-[10px] font-sans px-1.5 py-0.2 rounded bg-emerald-500/30 text-emerald-300 font-semibold">
-                                        Đáp án đúng
-                                      </span>
-                                    )}
-                                  </span>
-                                  <span className="font-mono text-[10px] text-cyan-300">
-                                    {opt.pinyin}
-                                  </span>
-                                </div>
-                                <p className="text-[11px] opacity-90">{opt.meaning}</p>
-                              </div>
-                            );
-                          })}
-                        </div>
-                      </div>
-                    )}
+                    {currentQ.clozeSentence ? (
+                      <p className="text-xs text-slate-300 leading-snug">
+                        {isCorrect
+                          ? 'Đã điền đúng từ vào câu. Ý nghĩa chi tiết từng đáp án hiển thị ở các ô phía trên.'
+                          : (
+                            <span>
+                              Đáp án đúng cho chỗ trống là: <strong className="text-emerald-300 font-serif font-bold text-sm">{currentQ.correctAnswer}</strong>
+                              {currentQ.clozeSentence.targetPinyin ? ` [${currentQ.clozeSentence.targetPinyin}]` : ''}.
+                            </span>
+                          )}
+                      </p>
+                    ) : currentQ.explanation ? (
+                      <p className="text-xs text-slate-300 leading-snug">{currentQ.explanation}</p>
+                    ) : null}
                   </div>
-                ) : (
-                  <p className="text-xs leading-relaxed text-slate-300">{currentQ.explanation}</p>
-                )}
+                </div>
 
-                <div className="pt-2 flex justify-end">
+                <div className="flex items-center justify-end shrink-0 pt-1 sm:pt-0">
                   <button
                     onClick={handleNextQuestion}
-                    className="px-4 py-2 text-xs font-bold text-slate-950 bg-gradient-to-r from-emerald-400 to-teal-300 hover:from-emerald-300 hover:to-teal-200 rounded-xl flex items-center gap-1.5 cursor-pointer shadow-md shadow-emerald-500/20 active:scale-95 transition"
+                    className="w-full sm:w-auto px-5 py-2.5 text-xs font-bold text-slate-950 bg-gradient-to-r from-emerald-400 to-teal-300 hover:from-emerald-300 hover:to-teal-200 active:scale-95 rounded-xl flex items-center justify-center gap-2 cursor-pointer shadow-lg shadow-emerald-500/20 transition"
                   >
                     <span>Câu tiếp theo</span>
+                    <span className="text-[10px] font-mono opacity-70 bg-slate-950/20 px-1.5 py-0.5 rounded">
+                      Space ↵
+                    </span>
                     <ArrowRight className="w-3.5 h-3.5 stroke-[2.5]" />
                   </button>
                 </div>

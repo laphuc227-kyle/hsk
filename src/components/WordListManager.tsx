@@ -159,6 +159,19 @@ export const WordListManager: React.FC<WordListManagerProps> = ({
     onRefreshData();
   };
 
+  const handleOpenCompoundDetail = (dc: DetectedCompoundWord) => {
+    const existing = characters.find((c) => c.hanzi === dc.word);
+    if (existing) {
+      onSelectCharacter(existing);
+      return;
+    }
+    const listTarget = selectedListId && !['all_single', 'all_compound', 'compound_review', 'compound_expansion'].includes(selectedListId)
+      ? [selectedListId]
+      : [dc.isFullMatch ? 'compound_review' : 'compound_expansion'];
+    const charObj = convertCompoundToCharacter(dc, listTarget);
+    onSelectCharacter(charObj);
+  };
+
   const handleAutoCategorizeHSK = () => {
     const categorized = autoCategorizeCharacters(characters);
     saveCharacters(categorized);
@@ -1104,7 +1117,13 @@ export const WordListManager: React.FC<WordListManagerProps> = ({
                     <div className="flex items-start justify-between gap-2">
                       <div>
                         <div className="flex items-center gap-2">
-                          <span className="text-3xl font-serif font-bold text-slate-100">{dc.word}</span>
+                          <span
+                            onClick={() => handleOpenCompoundDetail(dc)}
+                            className="text-3xl font-serif font-bold text-slate-100 hover:text-cyan-300 transition-colors cursor-pointer"
+                            title="Bấm để xem chi tiết chữ Hán này"
+                          >
+                            {dc.word}
+                          </span>
                           <button
                             type="button"
                             onClick={() => speakChinese(dc.word)}
@@ -1143,23 +1162,57 @@ export const WordListManager: React.FC<WordListManagerProps> = ({
                     <div className="space-y-1">
                       <span className="text-[10px] font-bold uppercase text-slate-400">Các chữ đơn cấu thành:</span>
                       <div className="flex flex-wrap items-center gap-1.5">
-                        {dc.constituents.map((c, idx) => (
-                          <React.Fragment key={idx}>
-                            {idx > 0 && <span className="text-slate-600 font-bold text-xs">+</span>}
-                            {c.inVocabulary ? (
-                              <span className="px-2.5 py-1 rounded-lg text-xs font-bold bg-emerald-950/80 text-emerald-300 border border-emerald-500/40 flex items-center gap-1">
-                                <span className="font-serif text-sm">{c.char}</span>
-                                {c.meaning && <span className="text-[10px] opacity-80 font-normal">({c.meaning})</span>}
-                                <CheckCircle2 className="w-3 h-3 text-emerald-400" />
-                              </span>
-                            ) : (
-                              <span className="px-2.5 py-1 rounded-lg text-xs font-bold bg-amber-950/80 text-amber-300 border border-amber-500/40 flex items-center gap-1">
-                                <span className="font-serif text-sm">{c.char}</span>
-                                <span className="text-[9px] font-mono text-amber-200 bg-amber-900/60 px-1 rounded">Chữ mới</span>
-                              </span>
-                            )}
-                          </React.Fragment>
-                        ))}
+                        {dc.constituents.map((c, idx) => {
+                          const singleChar = characters.find((ch) => ch.hanzi === c.char);
+                          const handleClickConstituent = () => {
+                            if (singleChar) {
+                              onSelectCharacter(singleChar);
+                            } else {
+                              const builtIn = lookupBuiltIn(c.char);
+                              const rad = findRadicalInfo(c.char);
+                              onSelectCharacter({
+                                id: `char-${Date.now()}-${c.char}`,
+                                hanzi: c.char,
+                                pinyin: c.pinyin || builtIn?.pinyin || rad?.pinyin || '',
+                                hanViet: c.hanViet || builtIn?.hanViet || rad?.hanViet || '',
+                                meaning: c.meaning || builtIn?.meaning || rad?.meaning || '',
+                                radical: builtIn?.radical || (rad ? `${rad.hanzi} (${rad.hanViet})` : 'Chưa rõ'),
+                                strokeCount: builtIn?.strokeCount || rad?.strokeCount || 1,
+                                listIds: ['single'],
+                                createdAt: Date.now(),
+                                srs: { ...DEFAULT_SRS },
+                              });
+                            }
+                          };
+
+                          return (
+                            <React.Fragment key={idx}>
+                              {idx > 0 && <span className="text-slate-600 font-bold text-xs">+</span>}
+                              {c.inVocabulary ? (
+                                <button
+                                  type="button"
+                                  onClick={handleClickConstituent}
+                                  className="px-2.5 py-1 rounded-lg text-xs font-bold bg-emerald-950/80 hover:bg-emerald-900 text-emerald-300 border border-emerald-500/40 hover:border-emerald-400 flex items-center gap-1 cursor-pointer transition active:scale-95"
+                                  title={`Bấm để xem chi tiết chữ đơn ${c.char}`}
+                                >
+                                  <span className="font-serif text-sm">{c.char}</span>
+                                  {c.meaning && <span className="text-[10px] opacity-80 font-normal">({c.meaning})</span>}
+                                  <CheckCircle2 className="w-3 h-3 text-emerald-400" />
+                                </button>
+                              ) : (
+                                <button
+                                  type="button"
+                                  onClick={handleClickConstituent}
+                                  className="px-2.5 py-1 rounded-lg text-xs font-bold bg-amber-950/80 hover:bg-amber-900 text-amber-300 border border-amber-500/40 hover:border-amber-400 flex items-center gap-1 cursor-pointer transition active:scale-95"
+                                  title={`Bấm để xem chi tiết chữ mới ${c.char}`}
+                                >
+                                  <span className="font-serif text-sm">{c.char}</span>
+                                  <span className="text-[9px] font-mono text-amber-200 bg-amber-900/60 px-1 rounded">Chữ mới</span>
+                                </button>
+                              )}
+                            </React.Fragment>
+                          );
+                        })}
                       </div>
                     </div>
 
@@ -1173,37 +1226,51 @@ export const WordListManager: React.FC<WordListManagerProps> = ({
                     )}
                   </div>
 
-                  <div className="pt-2 border-t border-slate-800/80 flex items-center justify-between gap-2">
-                    {dc.isInUserList ? (
-                      <span className="text-[11px] font-bold text-emerald-400 flex items-center gap-1 bg-emerald-500/10 px-2.5 py-1 rounded-xl border border-emerald-500/30">
-                        <CheckCircle2 className="w-3.5 h-3.5 text-emerald-400" />
-                        Đã trong từ vựng
-                      </span>
-                    ) : (
-                      <button
-                        type="button"
-                        onClick={() => handleSaveDetectedCompound(dc)}
-                        className="px-3 py-1.5 text-xs font-bold text-slate-950 bg-gradient-to-r from-emerald-400 to-teal-300 hover:from-emerald-300 hover:to-teal-200 rounded-xl transition cursor-pointer flex items-center gap-1 shadow-xs"
-                      >
-                        <Plus className="w-3.5 h-3.5 stroke-[3]" />
-                        <span>Lưu vào từ vựng</span>
-                      </button>
-                    )}
+                  <div className="pt-2.5 border-t border-slate-800/80 flex flex-wrap items-center justify-between gap-2">
+                    <div className="flex items-center gap-1.5">
+                      {dc.isInUserList ? (
+                        <span className="text-[11px] font-bold text-emerald-400 flex items-center gap-1 bg-emerald-500/10 px-2.5 py-1 rounded-xl border border-emerald-500/30">
+                          <CheckCircle2 className="w-3.5 h-3.5 text-emerald-400" />
+                          Đã trong từ vựng
+                        </span>
+                      ) : (
+                        <button
+                          type="button"
+                          onClick={() => handleSaveDetectedCompound(dc)}
+                          className="px-2.5 py-1.5 text-xs font-bold text-slate-950 bg-gradient-to-r from-emerald-400 to-teal-300 hover:from-emerald-300 hover:to-teal-200 rounded-xl transition cursor-pointer flex items-center gap-1 shadow-xs active:scale-95"
+                        >
+                          <Plus className="w-3.5 h-3.5 stroke-[3]" />
+                          <span>Lưu</span>
+                        </button>
+                      )}
+                    </div>
 
-                    {onStartSession && (
+                    <div className="flex items-center gap-1.5">
                       <button
                         type="button"
-                        onClick={() => onStartSession(dc.isFullMatch ? 'compound_words' : 'compound_expansion', undefined)}
-                        className={`px-3 py-1.5 text-xs font-bold rounded-xl transition cursor-pointer flex items-center gap-1 ${
-                          dc.isFullMatch
-                            ? 'text-slate-950 bg-amber-400 hover:bg-amber-300'
-                            : 'text-slate-950 bg-emerald-400 hover:bg-emerald-300'
-                        }`}
+                        onClick={() => handleOpenCompoundDetail(dc)}
+                        className="px-2.5 py-1.5 text-xs font-semibold text-cyan-300 hover:text-cyan-200 bg-cyan-950/70 hover:bg-cyan-900 border border-cyan-500/40 rounded-xl transition cursor-pointer flex items-center gap-1 shadow-xs active:scale-95"
+                        title="Xem chi tiết chữ Hán, chiết tự và các chữ đơn cấu thành"
                       >
-                        <span>{dc.isFullMatch ? 'Ôn bài này' : 'Học từ này'}</span>
-                        <ArrowRight className="w-3.5 h-3.5" />
+                        <BookOpen className="w-3.5 h-3.5 text-cyan-400" />
+                        <span>Chi tiết chữ Hán</span>
                       </button>
-                    )}
+
+                      {onStartSession && (
+                        <button
+                          type="button"
+                          onClick={() => onStartSession(dc.isFullMatch ? 'compound_words' : 'compound_expansion', undefined)}
+                          className={`px-3 py-1.5 text-xs font-bold rounded-xl transition cursor-pointer flex items-center gap-1 active:scale-95 ${
+                            dc.isFullMatch
+                              ? 'text-slate-950 bg-amber-400 hover:bg-amber-300'
+                              : 'text-slate-950 bg-emerald-400 hover:bg-emerald-300'
+                          }`}
+                        >
+                          <span>{dc.isFullMatch ? 'Ôn bài' : 'Học từ'}</span>
+                          <ArrowRight className="w-3.5 h-3.5" />
+                        </button>
+                      )}
+                    </div>
                   </div>
                 </div>
               ))}
