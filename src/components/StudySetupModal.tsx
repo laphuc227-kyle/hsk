@@ -12,6 +12,7 @@ import {
   ArrowRight,
   FolderHeart,
   FileQuestion,
+  PenTool,
 } from 'lucide-react';
 import { WordList, StudySessionMode, Character } from '../types';
 import { detectCompoundWordsFromCharacters } from '../services/compoundWordDetector';
@@ -95,6 +96,13 @@ export const StudySetupModal: React.FC<StudySetupModalProps> = ({
           desc: 'Điền từ đơn hoặc từ ghép 100% đã học vào câu. Trắc nghiệm 4 đáp án thử thách chiều sâu trí nhớ.',
           icon: FileQuestion,
           color: 'text-violet-400 bg-violet-500/20 border-violet-500/30',
+        };
+      case 'stroke_writing':
+        return {
+          title: 'Luyện viết nét (Flashcard viết)',
+          desc: 'Tập viết từng nét chữ Hán trên ô mễ điền. Vẽ đúng nét để mở khóa thông tin chữ và đánh giá ghi nhớ.',
+          icon: PenTool,
+          color: 'text-rose-400 bg-rose-500/20 border-rose-500/30',
         };
       default:
         return {

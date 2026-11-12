@@ -279,6 +279,21 @@ export function selectCharactersForSession(
       });
       break;
 
+    case 'stroke_writing':
+      // Target single characters strictly for stroke writing practice mode
+      {
+        const singleChars = pool.filter((c) => c.hanzi.length === 1);
+        pool = singleChars.length > 0 ? singleChars : allCharacters.filter((c) => c.hanzi.length === 1);
+        pool.sort((a, b) => {
+          const isDueA = a.srs.nextReviewDate <= now ? 50 : 0;
+          const isDueB = b.srs.nextReviewDate <= now ? 50 : 0;
+          const scoreA = isDueA + (100 - a.srs.masteryLevel) + Math.random() * 20;
+          const scoreB = isDueB + (100 - b.srs.masteryLevel) + Math.random() * 20;
+          return scoreB - scoreA;
+        });
+      }
+      break;
+
     case 'sentence_cloze':
     case 'random_test':
     default:

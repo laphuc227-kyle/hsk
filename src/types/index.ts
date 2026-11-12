@@ -15,6 +15,7 @@ export type QuestionType =
 export type StudySessionMode =
   | 'smart_daily'
   | 'quick_flashcard'
+  | 'stroke_writing'
   | 'weakness'
   | 'random_test'
   | 'sentence_cloze'

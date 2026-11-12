@@ -20,6 +20,7 @@ import {
   LogIn,
   LogOut,
   CheckCircle2,
+  PenTool,
 } from 'lucide-react';
 import { WordList, StudySessionMode } from '../types';
 
@@ -127,6 +128,19 @@ export const Sidebar: React.FC<SidebarProps> = ({
           >
             <Zap className="w-4 h-4 text-cyan-400 group-hover:scale-110 transition" />
             <span>Học nhanh (Flashcard)</span>
+          </button>
+
+          <button
+            onClick={() => handleAction(() => onStartSession('stroke_writing', selectedListId || undefined))}
+            className="w-full flex items-center justify-between px-2.5 py-2 rounded-xl text-xs font-medium text-slate-300 hover:text-rose-300 hover:bg-rose-500/10 border border-transparent hover:border-rose-500/20 transition cursor-pointer group"
+          >
+            <div className="flex items-center gap-2.5">
+              <PenTool className="w-4 h-4 text-rose-400 group-hover:scale-110 transition" />
+              <span>Luyện viết nét</span>
+            </div>
+            <span className="text-[9px] font-bold font-mono px-1.5 py-0.2 rounded bg-rose-500/20 text-rose-300 border border-rose-500/30">
+              Mới
+            </span>
           </button>
 
           <button

@@ -1,6 +1,6 @@
 import React, { useState, useMemo } from 'react';
 import { motion, AnimatePresence } from 'motion/react';
-import { Plus, Trash2, Search, Sparkles, BookOpen, Layers, Volume2, Edit, Loader2, ListPlus, FileText, CheckCircle2, Target, Zap, Flame, GraduationCap, Download, Copy, Check, FileSpreadsheet, Share2, Combine, ArrowRight, FileQuestion, X } from 'lucide-react';
+import { Plus, Trash2, Search, Sparkles, BookOpen, Layers, Volume2, Edit, Loader2, ListPlus, FileText, CheckCircle2, Target, Zap, Flame, GraduationCap, Download, Copy, Check, FileSpreadsheet, Share2, Combine, ArrowRight, FileQuestion, X, PenTool } from 'lucide-react';
 import { Character, WordList, StudySessionMode } from '../types';
 import { addCharacter, removeCharacter, saveWordLists, saveCharacters } from '../services/storage';
 import { DEFAULT_SRS } from '../services/dictionary';
@@ -940,6 +940,15 @@ export const WordListManager: React.FC<WordListManagerProps> = ({
                 >
                   <Zap className="w-4 h-4 stroke-[2.5]" />
                   <span>Học Flashcard</span>
+                </button>
+
+                <button
+                  type="button"
+                  onClick={() => onStartSession('stroke_writing', selectedListId || undefined)}
+                  className="px-3.5 py-2 text-xs font-bold text-white bg-gradient-to-r from-rose-500 to-pink-500 hover:from-rose-400 hover:to-pink-400 active:scale-95 rounded-xl transition flex items-center gap-1.5 cursor-pointer shadow-md shadow-rose-500/20"
+                >
+                  <PenTool className="w-4 h-4 stroke-[2.5]" />
+                  <span>Luyện viết nét</span>
                 </button>
 
                 <button

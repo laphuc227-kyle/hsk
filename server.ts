@@ -8,7 +8,7 @@ import { lookupBuiltIn, BUILT_IN_DICTIONARY } from './src/services/builtInDictio
 dotenv.config();
 
 const app = express();
-const PORT = Number(process.env.PORT) || 3000;
+const PORT = 3000;
 
 app.use(express.json({ limit: '10mb' }));
 
