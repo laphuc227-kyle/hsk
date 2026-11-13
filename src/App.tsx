@@ -16,10 +16,7 @@ import { RadicalsView } from './components/RadicalsView';
 import { SettingsModal } from './components/SettingsModal';
 import { StudySetupModal } from './components/StudySetupModal';
 import {
-  BookOpen,
-  BookOpenCheck,
   Sparkles,
-  Bot,
   Menu,
   Settings,
   Cloud,
@@ -485,7 +482,11 @@ export default function App() {
       />
 
       {/* Main Content Area with Canva Slide Transition */}
-      <main className="relative z-10 flex-1 overflow-y-auto px-3.5 py-4 sm:p-6 md:p-8 max-w-6xl mx-auto w-full pb-24 md:pb-8">
+      <main
+        className={`relative z-10 flex-1 overflow-y-auto px-3.5 py-3 sm:p-6 md:p-8 max-w-6xl mx-auto w-full ${
+          activeView === 'study' && studyMode === 'stroke_writing' ? 'pb-20 md:pb-8' : 'pb-6 md:pb-8'
+        }`}
+      >
         <AnimatePresence mode="wait">
           {activeView === 'lists' && (
             <motion.div
@@ -596,65 +597,6 @@ export default function App() {
           )}
         </AnimatePresence>
       </main>
-
-      {/* Mobile Bottom Navigation Bar (iPhone / Android) */}
-      <nav className="md:hidden fixed bottom-0 left-0 right-0 z-40 bg-slate-900/95 backdrop-blur-xl border-t border-slate-800/80 px-2 py-1.5 pb-[max(0.5rem,env(safe-area-inset-bottom))] shadow-2xl flex items-center justify-around select-none">
-        <button
-          onClick={() => {
-            setActiveView('lists');
-            setSelectedListId(null);
-          }}
-          className={`flex flex-col items-center gap-0.5 py-1 px-2.5 rounded-xl transition cursor-pointer active:scale-95 ${
-            activeView === 'lists' ? 'text-emerald-400 font-semibold' : 'text-slate-400 hover:text-slate-200'
-          }`}
-        >
-          <BookOpen className="w-5 h-5" />
-          <span className="text-[10px] tracking-tight">Từ vựng</span>
-        </button>
-
-        <button
-          onClick={() => handleStartSession('smart_daily')}
-          className={`relative flex flex-col items-center gap-0.5 py-1 px-2.5 rounded-xl transition cursor-pointer active:scale-95 ${
-            activeView === 'study' ? 'text-emerald-400 font-semibold' : 'text-slate-400 hover:text-slate-200'
-          }`}
-        >
-          <div className="relative">
-            <Sparkles className="w-5 h-5 text-emerald-400" />
-            {dueCount > 0 && (
-              <span className="absolute -top-1 -right-2 min-w-4 h-4 px-1 bg-emerald-500 text-slate-950 font-bold text-[9px] rounded-full flex items-center justify-center">
-                {dueCount > 99 ? '99+' : dueCount}
-              </span>
-            )}
-          </div>
-          <span className="text-[10px] tracking-tight">Học ngay</span>
-        </button>
-
-        <button
-          onClick={() => setActiveView('grammar')}
-          className={`flex flex-col items-center gap-0.5 py-1 px-2.5 rounded-xl transition cursor-pointer active:scale-95 ${
-            activeView === 'grammar' ? 'text-emerald-400 font-semibold' : 'text-slate-400 hover:text-slate-200'
-          }`}
-        >
-          <BookOpenCheck className="w-5 h-5" />
-          <span className="text-[10px] tracking-tight">Ngữ pháp</span>
-        </button>
-
-        <button
-          onClick={() => handleOpenTutorForHanzi()}
-          className="flex flex-col items-center gap-0.5 py-1 px-2.5 rounded-xl text-cyan-400 hover:text-cyan-300 transition cursor-pointer active:scale-95"
-        >
-          <Bot className="w-5 h-5" />
-          <span className="text-[10px] tracking-tight">Gia sư AI</span>
-        </button>
-
-        <button
-          onClick={() => setIsMobileMenuOpen(true)}
-          className="flex flex-col items-center gap-0.5 py-1 px-2.5 rounded-xl text-slate-400 hover:text-slate-200 transition cursor-pointer active:scale-95"
-        >
-          <Menu className="w-5 h-5" />
-          <span className="text-[10px] tracking-tight">Menu</span>
-        </button>
-      </nav>
 
       {/* Modals & Drawers */}
       <AnimatePresence>

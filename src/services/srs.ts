@@ -280,10 +280,10 @@ export function selectCharactersForSession(
       break;
 
     case 'stroke_writing':
-      // Target single characters strictly for stroke writing practice mode
+      // Support both single characters and compound words containing Chinese characters
       {
-        const singleChars = pool.filter((c) => c.hanzi.length === 1);
-        pool = singleChars.length > 0 ? singleChars : allCharacters.filter((c) => c.hanzi.length === 1);
+        const hanziWords = pool.filter((c) => /\p{Script=Han}/u.test(c.hanzi));
+        pool = hanziWords.length > 0 ? hanziWords : allCharacters.filter((c) => /\p{Script=Han}/u.test(c.hanzi));
         pool.sort((a, b) => {
           const isDueA = a.srs.nextReviewDate <= now ? 50 : 0;
           const isDueB = b.srs.nextReviewDate <= now ? 50 : 0;
@@ -450,8 +450,8 @@ export function generateQuestionForCharacter(
     'type_hanzi',
   ];
 
-  // Stroke writing is strictly for single Chinese characters (hanzi.length === 1).
-  // Excluded for compound words to prevent errors and optimize learning flow.
+  // Stroke writing can be triggered in general mode for single characters,
+  // and always works for both single & compound words when explicitly forced.
   if (!isCompoundWord) {
     availableTypes.push('stroke_writing');
   }
@@ -460,10 +460,7 @@ export function generateQuestionForCharacter(
     availableTypes.push('fill_sentence');
   }
 
-  let selectedType = forcedType;
-  if (selectedType === 'stroke_writing' && isCompoundWord) {
-    selectedType = undefined;
-  }
+  const selectedType = forcedType;
 
   const type = selectedType || availableTypes[Math.floor(Math.random() * availableTypes.length)];
   const qId = `q_${character.id}_${Date.now()}_${Math.random().toString(36).substring(2, 7)}`;

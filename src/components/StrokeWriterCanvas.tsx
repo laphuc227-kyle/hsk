@@ -1,4 +1,5 @@
 import React, { useRef, useState, useEffect, useMemo } from 'react';
+import { createPortal } from 'react-dom';
 import {
   RefreshCw,
   Play,
@@ -8,6 +9,7 @@ import {
   Edit3,
   CheckCircle2,
   Sparkles,
+  Pin,
 } from 'lucide-react';
 import HanziWriter from 'hanzi-writer';
 import { speakChinese } from '../services/audio';
@@ -20,6 +22,7 @@ interface StrokeWriterCanvasProps {
   autoStartQuiz?: boolean;
   hideOutlineByDefault?: boolean;
   previewOutlineSeconds?: number;
+  dockControlsOnMobile?: boolean;
   onStrokeSuccess?: (current: number, total: number) => void;
   onStrokeMistake?: () => void;
 }
@@ -32,6 +35,7 @@ export const StrokeWriterCanvas: React.FC<StrokeWriterCanvasProps> = ({
   autoStartQuiz = false,
   hideOutlineByDefault = false,
   previewOutlineSeconds = 0,
+  dockControlsOnMobile = false,
   onStrokeSuccess,
   onStrokeMistake,
 }) => {
@@ -43,30 +47,38 @@ export const StrokeWriterCanvas: React.FC<StrokeWriterCanvasProps> = ({
   const [selectedCharIndex, setSelectedCharIndex] = useState(0);
   const activeChar = characters[selectedCharIndex] || characters[0] || hanzi;
 
-  // Responsive canvas size calculation: optimal for mobile touch while fitting within screen bounds
+  // Responsive canvas size calculation: generous size for mobile finger writing & desktop
   const [computedSize, setComputedSize] = useState<number>(() => {
     if (propSize) return propSize;
     if (typeof window !== 'undefined') {
       const screenWidth = window.innerWidth;
-      if (screenWidth < 380) return 220;
-      if (screenWidth < 640) return 240;
-      return 250;
+      const screenHeight = window.innerHeight;
+      if (screenWidth < 380) return Math.max(245, Math.min(295, screenWidth - 44));
+      if (screenWidth < 640) return Math.max(255, Math.min(315, screenWidth - 48, screenHeight - 265));
+      return 300;
     }
-    return 240;
+    return 290;
   });
 
   const containerRef = useRef<HTMLDivElement | null>(null);
   const writerRef = useRef<any>(null);
 
-  const [showGuide, setShowGuide] = useState(!hideOutlineByDefault);
+  const [alwaysShowOutline, setAlwaysShowOutline] = useState(!hideOutlineByDefault);
+  const [showGuide, setShowGuide] = useState(previewOutlineSeconds > 0 ? true : !hideOutlineByDefault);
   const [isAnimating, setIsAnimating] = useState(false);
   const [isQuizMode, setIsQuizMode] = useState(autoStartQuiz);
   const [quizSuccess, setQuizSuccess] = useState(false);
   const [strokeProgress, setStrokeProgress] = useState<{ current: number; total: number } | null>(null);
-  const [outlineCountdown, setOutlineCountdown] = useState<number | null>(null);
+  const [outlineCountdown, setOutlineCountdown] = useState<number | null>(
+    previewOutlineSeconds > 0 ? Math.ceil(previewOutlineSeconds) : null
+  );
 
   const previewTimerRef = useRef<any>(null);
   const intervalTimerRef = useRef<any>(null);
+  const alwaysShowOutlineRef = useRef(alwaysShowOutline);
+  alwaysShowOutlineRef.current = alwaysShowOutline;
+  const showGuideRef = useRef(showGuide);
+  showGuideRef.current = showGuide;
 
   const clearOutlineTimers = () => {
     if (previewTimerRef.current) {
@@ -94,12 +106,13 @@ export const StrokeWriterCanvas: React.FC<StrokeWriterCanvasProps> = ({
     }
     const updateSize = () => {
       const screenWidth = window.innerWidth;
+      const screenHeight = window.innerHeight;
       if (screenWidth < 380) {
-        setComputedSize(220);
+        setComputedSize(Math.max(245, Math.min(295, screenWidth - 44)));
       } else if (screenWidth < 640) {
-        setComputedSize(Math.min(250, screenWidth - 70));
+        setComputedSize(Math.max(255, Math.min(315, screenWidth - 48, screenHeight - 265)));
       } else {
-        setComputedSize(250);
+        setComputedSize(300);
       }
     };
 
@@ -111,6 +124,7 @@ export const StrokeWriterCanvas: React.FC<StrokeWriterCanvasProps> = ({
   // Initialize or re-create HanziWriter when activeChar or computedSize changes
   useEffect(() => {
     if (!containerRef.current || !activeChar) return;
+    let isCancelled = false;
 
     containerRef.current.innerHTML = '';
     clearOutlineTimers();
@@ -120,8 +134,12 @@ export const StrokeWriterCanvas: React.FC<StrokeWriterCanvasProps> = ({
     setStrokeProgress(null);
 
     const hasPreview = previewOutlineSeconds > 0;
-    const initialShowOutline = hasPreview ? true : (hideOutlineByDefault ? false : showGuide);
+    const initialShowOutline = hasPreview ? true : !hideOutlineByDefault;
+    setAlwaysShowOutline(!hideOutlineByDefault);
     setShowGuide(initialShowOutline);
+    if (hasPreview) {
+      setOutlineCountdown(Math.ceil(previewOutlineSeconds));
+    }
 
     try {
       const writer = HanziWriter.create(containerRef.current, activeChar, {
@@ -132,44 +150,54 @@ export const StrokeWriterCanvas: React.FC<StrokeWriterCanvasProps> = ({
         strokeAnimationSpeed: 1.1,
         delayBetweenStrokes: 160,
         strokeColor: '#34D399', // Emerald / mint stroke color
-        outlineColor: '#334155', // Slate outline
+        outlineColor: '#475569', // Crisp ghost outline on dark slate
         drawingColor: '#38BDF8', // Cyan drawing stroke color for user's finger!
-        drawingWidth: 22, // Thick finger-friendly stroke width for touchscreens
+        drawingWidth: Math.max(20, Math.round(computedSize * 0.085)),
         showCharacter: false,
         showHintAfterMisses: 2,
         highlightOnComplete: true,
+        onLoadCharDataSuccess: () => {
+          if (isCancelled || !writerRef.current || !hasPreview) return;
+          writerRef.current.showOutline();
+          let remaining = Math.ceil(previewOutlineSeconds);
+          setOutlineCountdown(remaining);
+
+          if (intervalTimerRef.current) clearInterval(intervalTimerRef.current);
+          intervalTimerRef.current = setInterval(() => {
+            if (isCancelled) return;
+            remaining -= 1;
+            if (remaining <= 0) {
+              if (intervalTimerRef.current) {
+                clearInterval(intervalTimerRef.current);
+                intervalTimerRef.current = null;
+              }
+              setOutlineCountdown(null);
+            } else {
+              setOutlineCountdown(remaining);
+            }
+          }, 950);
+
+          if (previewTimerRef.current) clearTimeout(previewTimerRef.current);
+          previewTimerRef.current = setTimeout(() => {
+            if (isCancelled) return;
+            if (!alwaysShowOutlineRef.current) {
+              if (writerRef.current) {
+                writerRef.current.hideOutline();
+              }
+              setShowGuide(false);
+            }
+            clearOutlineTimers();
+          }, previewOutlineSeconds * 1000);
+        },
       });
 
       writerRef.current = writer;
-
-      // Automatically hide outline after preview duration if configured
-      if (hasPreview) {
-        let remaining = Math.ceil(previewOutlineSeconds);
-        setOutlineCountdown(remaining);
-
-        intervalTimerRef.current = setInterval(() => {
-          remaining -= 1;
-          if (remaining <= 0) {
-            clearOutlineTimers();
-          } else {
-            setOutlineCountdown(remaining);
-          }
-        }, 1000);
-
-        previewTimerRef.current = setTimeout(() => {
-          if (writerRef.current) {
-            writerRef.current.hideOutline();
-          }
-          setShowGuide(false);
-          clearOutlineTimers();
-        }, previewOutlineSeconds * 1000);
-      }
 
       if (autoStartQuiz) {
         writer.quiz({
           onCorrectStroke: (strokeData: any) => {
             clearOutlineTimers();
-            if (hideOutlineByDefault && writerRef.current) {
+            if (!alwaysShowOutlineRef.current && writerRef.current) {
               writerRef.current.hideOutline();
               setShowGuide(false);
             }
@@ -187,7 +215,7 @@ export const StrokeWriterCanvas: React.FC<StrokeWriterCanvasProps> = ({
           },
           onMistake: () => {
             clearOutlineTimers();
-            if (hideOutlineByDefault && writerRef.current) {
+            if (!alwaysShowOutlineRef.current && writerRef.current) {
               writerRef.current.hideOutline();
               setShowGuide(false);
             }
@@ -220,41 +248,28 @@ export const StrokeWriterCanvas: React.FC<StrokeWriterCanvasProps> = ({
     } catch (err) {
       console.error('Error creating HanziWriter:', err);
     }
+
+    return () => {
+      isCancelled = true;
+      clearOutlineTimers();
+    };
   }, [activeChar, computedSize, autoStartQuiz, hideOutlineByDefault, previewOutlineSeconds]);
 
   // Toggle guide visibility
   useEffect(() => {
     if (!writerRef.current) return;
-    if (showGuide) {
+    if (showGuide || alwaysShowOutline) {
       writerRef.current.showOutline();
     } else {
       writerRef.current.hideOutline();
     }
-  }, [showGuide]);
-
-  // Animate stroke writing demonstration
-  const handleAnimate = () => {
-    if (!writerRef.current || isAnimating) return;
-    clearOutlineTimers();
-    setIsAnimating(true);
-    setIsQuizMode(false);
-    setQuizSuccess(false);
-    setStrokeProgress(null);
-    speakChinese(activeChar);
-
-    writerRef.current.hideCharacter();
-    writerRef.current.animateCharacter({
-      onComplete: () => {
-        setIsAnimating(false);
-      },
-    });
-  };
+  }, [showGuide, alwaysShowOutline]);
 
   // Start interactive finger-drawing quiz mode
-  const handleStartQuiz = () => {
+  const handleStartQuiz = (preserveGuide = false) => {
     if (!writerRef.current) return;
     clearOutlineTimers();
-    if (hideOutlineByDefault) {
+    if (!preserveGuide && hideOutlineByDefault && !alwaysShowOutlineRef.current) {
       writerRef.current.hideOutline();
       setShowGuide(false);
     }
@@ -274,10 +289,14 @@ export const StrokeWriterCanvas: React.FC<StrokeWriterCanvasProps> = ({
     writerRef.current.quiz({
       onCorrectStroke: (strokeData: any) => {
         clearOutlineTimers();
-        setStrokeProgress({
-          current: strokeData.strokeNum + 1,
-          total: strokeData.character?.strokes?.length || strokeData.strokeNum + 1,
-        });
+        if (!alwaysShowOutlineRef.current && writerRef.current) {
+          writerRef.current.hideOutline();
+          setShowGuide(false);
+        }
+        const current = strokeData.strokeNum + 1;
+        const total = strokeData.character?.strokes?.length || strokeData.strokeNum + 1;
+        setStrokeProgress({ current, total });
+        onStrokeSuccess?.(current, total);
         if (typeof navigator !== 'undefined' && 'vibrate' in navigator) {
           try {
             navigator.vibrate(25);
@@ -288,6 +307,11 @@ export const StrokeWriterCanvas: React.FC<StrokeWriterCanvasProps> = ({
       },
       onMistake: () => {
         clearOutlineTimers();
+        if (!alwaysShowOutlineRef.current && writerRef.current) {
+          writerRef.current.hideOutline();
+          setShowGuide(false);
+        }
+        onStrokeMistake?.();
         if (typeof navigator !== 'undefined' && 'vibrate' in navigator) {
           try {
             navigator.vibrate([30, 40, 30]);
@@ -314,6 +338,27 @@ export const StrokeWriterCanvas: React.FC<StrokeWriterCanvasProps> = ({
     });
   };
 
+  // Animate stroke writing demonstration
+  const handleAnimate = () => {
+    if (!writerRef.current || isAnimating) return;
+    clearOutlineTimers();
+    setIsAnimating(true);
+    setIsQuizMode(false);
+    setQuizSuccess(false);
+    setStrokeProgress(null);
+    speakChinese(activeChar);
+
+    writerRef.current.hideCharacter();
+    writerRef.current.animateCharacter({
+      onComplete: () => {
+        setIsAnimating(false);
+        if (autoStartQuiz) {
+          handleStartQuiz(true);
+        }
+      },
+    });
+  };
+
   // Reset and clear drawing
   const handleReset = () => {
     if (!writerRef.current) return;
@@ -323,18 +368,41 @@ export const StrokeWriterCanvas: React.FC<StrokeWriterCanvasProps> = ({
     setIsAnimating(false);
     setStrokeProgress(null);
     writerRef.current.hideCharacter();
-    if (showGuide) {
+    if (showGuide || alwaysShowOutlineRef.current) {
       writerRef.current.showOutline();
     } else {
       writerRef.current.hideOutline();
     }
     if (autoStartQuiz) {
-      handleStartQuiz();
+      handleStartQuiz(true);
     }
   };
 
+  // Temporary peek: shows outline until the user draws the next stroke
+  const handleToggleGuide = () => {
+    clearOutlineTimers();
+    if (alwaysShowOutline) {
+      setAlwaysShowOutline(false);
+      setShowGuide(false);
+      return;
+    }
+    setShowGuide((prev) => !prev);
+  };
+
+  // Persistent toggle: keeps outline visible even while drawing strokes
+  const handleToggleAlwaysShow = () => {
+    clearOutlineTimers();
+    setAlwaysShowOutline((prev) => {
+      const next = !prev;
+      setShowGuide(next);
+      return next;
+    });
+  };
+
+  const isGuideCurrentlyVisible = alwaysShowOutline || showGuide;
+
   return (
-    <div className="flex flex-col items-center w-full max-w-sm mx-auto space-y-3 select-none">
+    <div className="flex flex-col items-center w-full max-w-md mx-auto space-y-3 select-none">
       {/* If compound word: Character Tabs Switcher */}
       {characters.length > 1 && (
         <div className="flex items-center gap-1.5 p-1 bg-slate-900/90 rounded-xl border border-slate-800 shadow-xs mb-1">
@@ -358,7 +426,11 @@ export const StrokeWriterCanvas: React.FC<StrokeWriterCanvasProps> = ({
 
       {/* Rice Grid Box with strict touch isolation */}
       <div
-        className="relative rounded-2xl overflow-hidden border-2 border-slate-800 bg-slate-950 shadow-2xl flex justify-center items-center touch-none select-none transition-all duration-200"
+        className={`relative rounded-2xl overflow-hidden border-2 bg-slate-950 flex justify-center items-center touch-none select-none transition-all duration-300 ${
+          quizSuccess
+            ? 'border-emerald-400 shadow-[0_0_28px_rgba(52,211,153,0.35)] scale-[1.015]'
+            : 'border-slate-800 shadow-2xl'
+        }`}
         style={{
           width: computedSize,
           height: computedSize,
@@ -458,13 +530,17 @@ export const StrokeWriterCanvas: React.FC<StrokeWriterCanvasProps> = ({
       </div>
 
       {/* Helpful Mobile Tip */}
-      <p className="text-[11px] text-slate-400 text-center flex items-center justify-center gap-1">
+      <p
+        className={`text-[11px] text-slate-400 text-center items-center justify-center gap-1 ${
+          dockControlsOnMobile ? 'hidden sm:flex' : 'flex'
+        }`}
+      >
         <Sparkles className="w-3 h-3 text-cyan-400 shrink-0" />
         <span>Dùng ngón tay hoặc bút cảm ứng vẽ trực tiếp vào ô vuông</span>
       </p>
 
-      {/* Control Buttons Bar - 2-row Mobile Responsive Layout (Reset button is never clipped) */}
-      <div className="w-full space-y-2 pt-1">
+      {/* Control Buttons Bar (Inline on desktop, or always inline when dockControlsOnMobile is false) */}
+      <div className={`w-full space-y-2 pt-1 ${dockControlsOnMobile ? 'hidden md:block' : ''}`}>
         {/* Row 1: 4 compact action tools in 4-col grid */}
         <div className="grid grid-cols-4 gap-1.5 w-full">
           {/* Play Simulation Button */}
@@ -479,34 +555,50 @@ export const StrokeWriterCanvas: React.FC<StrokeWriterCanvasProps> = ({
             <span className="text-[11px] font-semibold truncate">{isAnimating ? 'Đang viết...' : 'Mô phỏng'}</span>
           </button>
 
-          {/* Start Finger Quiz / Practice Button */}
-          <button
-            type="button"
-            onClick={handleStartQuiz}
-            className={`py-2 px-1 rounded-xl transition border flex flex-col sm:flex-row items-center justify-center gap-1 cursor-pointer shadow-xs active:scale-95 min-h-[38px] ${
-              isQuizMode
-                ? 'bg-cyan-500/20 text-cyan-300 border-cyan-500 font-bold shadow-md shadow-cyan-500/20'
-                : 'bg-slate-900 text-slate-200 hover:bg-slate-800 border-slate-700/80'
-            }`}
-            title="Tự tập viết từng nét theo thứ tự chuẩn"
-          >
-            <Edit3 className="w-3.5 h-3.5 text-cyan-400 shrink-0" />
-            <span className="text-[11px] font-semibold truncate">{isQuizMode ? 'Đang viết' : 'Tự viết'}</span>
-          </button>
+          {/* Button 2: Luôn hiện nét (when autoStartQuiz) OR Tự viết (in detail modal) */}
+          {autoStartQuiz ? (
+            <button
+              type="button"
+              onClick={handleToggleAlwaysShow}
+              className={`py-2 px-1 rounded-xl transition border flex flex-col sm:flex-row items-center justify-center gap-1 cursor-pointer shadow-xs active:scale-95 min-h-[38px] ${
+                alwaysShowOutline
+                  ? 'bg-cyan-500/20 text-cyan-300 border-cyan-500 font-bold shadow-md shadow-cyan-500/20'
+                  : 'bg-slate-900 text-slate-300 hover:bg-slate-800 border-slate-700/80'
+              }`}
+              title="Bật/tắt chế độ luôn hiển thị nét mờ khi viết"
+            >
+              <Pin className={`w-3.5 h-3.5 shrink-0 ${alwaysShowOutline ? 'text-cyan-300' : 'text-cyan-400'}`} />
+              <span className="text-[11px] font-semibold truncate">Luôn hiện</span>
+            </button>
+          ) : (
+            <button
+              type="button"
+              onClick={() => handleStartQuiz()}
+              className={`py-2 px-1 rounded-xl transition border flex flex-col sm:flex-row items-center justify-center gap-1 cursor-pointer shadow-xs active:scale-95 min-h-[38px] ${
+                isQuizMode
+                  ? 'bg-cyan-500/20 text-cyan-300 border-cyan-500 font-bold shadow-md shadow-cyan-500/20'
+                  : 'bg-slate-900 text-slate-200 hover:bg-slate-800 border-slate-700/80'
+              }`}
+              title="Tự tập viết từng nét theo thứ tự chuẩn"
+            >
+              <Edit3 className="w-3.5 h-3.5 text-cyan-400 shrink-0" />
+              <span className="text-[11px] font-semibold truncate">{isQuizMode ? 'Đang viết' : 'Tự viết'}</span>
+            </button>
+          )}
 
-          {/* Toggle Guide Outline Button */}
+          {/* Toggle Temporary Guide Outline Button (auto hides on next stroke) */}
           <button
             type="button"
-            onClick={() => setShowGuide(!showGuide)}
+            onClick={handleToggleGuide}
             className={`py-2 px-1 rounded-xl transition border flex flex-col sm:flex-row items-center justify-center gap-1 cursor-pointer shadow-xs active:scale-95 min-h-[38px] ${
-              showGuide
+              isGuideCurrentlyVisible
                 ? 'bg-emerald-500/20 text-emerald-300 border-emerald-500/50'
                 : 'bg-slate-900 text-slate-400 hover:bg-slate-800 border-slate-800'
             }`}
-            title={showGuide ? 'Ẩn nét mẫu mờ' : 'Hiện nét mẫu mờ'}
+            title="Xem nhanh nét mẫu (tự ẩn khi bạn viết nét tiếp theo)"
           >
-            {showGuide ? <Eye className="w-3.5 h-3.5 text-emerald-400 shrink-0" /> : <EyeOff className="w-3.5 h-3.5 text-slate-500 shrink-0" />}
-            <span className="text-[11px] font-semibold truncate">{showGuide ? 'Ẩn mẫu' : 'Nét mẫu'}</span>
+            {isGuideCurrentlyVisible ? <Eye className="w-3.5 h-3.5 text-emerald-400 shrink-0" /> : <EyeOff className="w-3.5 h-3.5 text-slate-500 shrink-0" />}
+            <span className="text-[11px] font-semibold truncate">{isGuideCurrentlyVisible ? 'Ẩn mẫu' : 'Nét mẫu'}</span>
           </button>
 
           {/* Speak Audio Button */}
@@ -532,6 +624,112 @@ export const StrokeWriterCanvas: React.FC<StrokeWriterCanvasProps> = ({
           <span>Xóa nét vẽ làm lại</span>
         </button>
       </div>
+
+      {/* Mobile Fixed Bottom Action Bar (replaces old bottom nav in stroke_writing mode) */}
+      {dockControlsOnMobile &&
+        typeof document !== 'undefined' &&
+        createPortal(
+          <div className="md:hidden fixed bottom-0 left-0 right-0 z-40 bg-slate-900/95 backdrop-blur-xl border-t border-slate-800/90 px-2 py-1.5 pb-[max(0.5rem,env(safe-area-inset-bottom))] shadow-2xl select-none">
+            <div className="grid grid-cols-5 gap-1 max-w-md mx-auto">
+              {/* 1. Mô phỏng */}
+              <button
+                type="button"
+                onClick={handleAnimate}
+                disabled={isAnimating}
+                className="flex flex-col items-center justify-center gap-0.5 py-1.5 px-1 rounded-xl text-emerald-300 hover:bg-slate-800/80 active:scale-95 transition cursor-pointer disabled:opacity-50"
+                title="Mô phỏng viết theo từng nét chuẩn"
+              >
+                <Play className="w-4 h-4 text-emerald-400 fill-emerald-400 shrink-0" />
+                <span className="text-[10px] font-semibold tracking-tight leading-tight truncate max-w-full">
+                  {isAnimating ? 'Đang viết' : 'Mô phỏng'}
+                </span>
+              </button>
+
+              {/* 2. Luôn hiện nét (or Tự viết if !autoStartQuiz) */}
+              {autoStartQuiz ? (
+                <button
+                  type="button"
+                  onClick={handleToggleAlwaysShow}
+                  className={`flex flex-col items-center justify-center gap-0.5 py-1.5 px-1 rounded-xl active:scale-95 transition cursor-pointer ${
+                    alwaysShowOutline
+                      ? 'bg-cyan-500/15 text-cyan-300 font-bold border border-cyan-500/40'
+                      : 'text-slate-300 hover:bg-slate-800/80'
+                  }`}
+                  title="Bật/tắt chế độ luôn hiện nét mờ khi viết"
+                >
+                  <Pin className="w-4 h-4 text-cyan-400 shrink-0" />
+                  <span className="text-[10px] font-semibold tracking-tight leading-tight truncate max-w-full">
+                    Luôn hiện
+                  </span>
+                </button>
+              ) : (
+                <button
+                  type="button"
+                  onClick={() => handleStartQuiz()}
+                  className={`flex flex-col items-center justify-center gap-0.5 py-1.5 px-1 rounded-xl active:scale-95 transition cursor-pointer ${
+                    isQuizMode
+                      ? 'bg-cyan-500/15 text-cyan-300 font-bold border border-cyan-500/40'
+                      : 'text-slate-300 hover:bg-slate-800/80'
+                  }`}
+                  title="Tự tập viết từng nét theo thứ tự chuẩn"
+                >
+                  <Edit3 className="w-4 h-4 text-cyan-400 shrink-0" />
+                  <span className="text-[10px] font-semibold tracking-tight leading-tight truncate max-w-full">
+                    {isQuizMode ? 'Đang viết' : 'Tự viết'}
+                  </span>
+                </button>
+              )}
+
+              {/* 3. Nét mẫu (tự ẩn khi viết nét tiếp theo) */}
+              <button
+                type="button"
+                onClick={handleToggleGuide}
+                className={`flex flex-col items-center justify-center gap-0.5 py-1.5 px-1 rounded-xl active:scale-95 transition cursor-pointer ${
+                  isGuideCurrentlyVisible
+                    ? 'bg-emerald-500/15 text-emerald-300 font-bold border border-emerald-500/40'
+                    : 'text-slate-400 hover:bg-slate-800/80'
+                }`}
+                title="Xem nhanh nét mẫu (tự ẩn khi viết nét tiếp theo)"
+              >
+                {isGuideCurrentlyVisible ? (
+                  <Eye className="w-4 h-4 text-emerald-400 shrink-0" />
+                ) : (
+                  <EyeOff className="w-4 h-4 text-slate-400 shrink-0" />
+                )}
+                <span className="text-[10px] font-semibold tracking-tight leading-tight truncate max-w-full">
+                  {isGuideCurrentlyVisible ? 'Ẩn mẫu' : 'Nét mẫu'}
+                </span>
+              </button>
+
+              {/* 4. Phát âm */}
+              <button
+                type="button"
+                onClick={() => speakChinese(activeChar)}
+                className="flex flex-col items-center justify-center gap-0.5 py-1.5 px-1 rounded-xl text-cyan-300 hover:bg-slate-800/80 active:scale-95 transition cursor-pointer"
+                title="Phát âm chữ này"
+              >
+                <Volume2 className="w-4 h-4 text-cyan-400 shrink-0" />
+                <span className="text-[10px] font-semibold tracking-tight leading-tight truncate max-w-full">
+                  Phát âm
+                </span>
+              </button>
+
+              {/* 5. Xóa nét vẽ làm lại */}
+              <button
+                type="button"
+                onClick={handleReset}
+                className="flex flex-col items-center justify-center gap-0.5 py-1.5 px-1 rounded-xl text-amber-300 hover:bg-slate-800/80 active:scale-95 transition cursor-pointer"
+                title="Xóa nét vẽ làm lại"
+              >
+                <RefreshCw className="w-4 h-4 text-amber-400 shrink-0" />
+                <span className="text-[10px] font-semibold tracking-tight leading-tight truncate max-w-full">
+                  Làm lại
+                </span>
+              </button>
+            </div>
+          </div>,
+          document.body
+        )}
     </div>
   );
 };

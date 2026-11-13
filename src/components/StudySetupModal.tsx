@@ -100,7 +100,7 @@ export const StudySetupModal: React.FC<StudySetupModalProps> = ({
       case 'stroke_writing':
         return {
           title: 'Luyện viết nét (Flashcard viết)',
-          desc: 'Tập viết từng nét chữ Hán trên ô mễ điền. Vẽ đúng nét để mở khóa thông tin chữ và đánh giá ghi nhớ.',
+          desc: 'Tập viết từng nét chữ Hán trên ô mễ điền (hỗ trợ cả chữ đơn và từ ghép viết song song 2 chữ). Vẽ đúng nét để mở khóa thông tin.',
           icon: PenTool,
           color: 'text-rose-400 bg-rose-500/20 border-rose-500/30',
         };

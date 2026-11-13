@@ -88,3 +88,76 @@ export function checkPinyinAnswer(userInput: string, targetPinyin: string): bool
 
   return false;
 }
+
+const PINYIN_SYLLABLE_REGEX =
+  /(?:zh|ch|sh|[bpmfdtnlgkhjqxrzcsyw])?(?:iang|iong|uang|ueng|ian|iao|ing|ong|uai|uan|ang|eng|ai|ei|ao|ou|an|en|in|un|er|ia|ie|iu|ua|uo|ue|ve|a|o|e|i|u|ü|v)(?:r(?![aeiouüvāáǎàēéěèīíǐìōóǒòūúǔùǖǘǚǜ]))?/gi;
+
+function normalizeAccentedToAscii(str: string): string {
+  let out = '';
+  for (const ch of str.toLowerCase()) {
+    if (ACCENT_TO_TONE_MAP[ch]) {
+      out += ACCENT_TO_TONE_MAP[ch].base;
+    } else if (ch === 'ü') {
+      out += 'v';
+    } else {
+      out += ch;
+    }
+  }
+  return out;
+}
+
+/**
+ * Splits a compound word's pinyin (e.g. "xuéshēng" or "nǐ hǎo") into per-character syllables.
+ * Falls back to provided single-char lookup pinyins when joined pinyin is ambiguous.
+ */
+export function splitCompoundPinyin(
+  wordPinyin: string | undefined,
+  hanziChars: string[],
+  fallbackLookup?: (ch: string) => string | undefined
+): string[] {
+  const count = hanziChars.length;
+  if (count === 0) return [];
+  if (!wordPinyin || !wordPinyin.trim()) {
+    return hanziChars.map((ch) => fallbackLookup?.(ch)?.split(/[/,;]/)[0]?.trim() || '');
+  }
+
+  // 1. Space / separator delimited tokens (e.g. "nǐ hǎo", "mǎi dōngxi")
+  const rawTokens = wordPinyin
+    .trim()
+    .split(/[\s'’\-]+/)
+    .filter(Boolean);
+
+  if (rawTokens.length === count) {
+    return rawTokens;
+  }
+
+  // 2. Segment each token into Mandarin syllables while preserving original tone marks
+  const segmented: string[] = [];
+  for (const token of rawTokens) {
+    const asciiToken = normalizeAccentedToAscii(token);
+    const matches = asciiToken.match(PINYIN_SYLLABLE_REGEX);
+    if (matches && matches.join('').length === asciiToken.length) {
+      let cursor = 0;
+      const origChars = Array.from(token);
+      for (const m of matches) {
+        const slice = origChars.slice(cursor, cursor + m.length).join('');
+        segmented.push(slice);
+        cursor += m.length;
+      }
+    } else {
+      segmented.push(token);
+    }
+  }
+
+  if (segmented.length === count) {
+    return segmented;
+  }
+
+  // 3. Fallback: try per-character dictionary lookup
+  return hanziChars.map((ch, idx) => {
+    const looked = fallbackLookup?.(ch)?.split(/[/,;]/)[0]?.trim();
+    if (looked) return looked;
+    return segmented[idx] || (idx === 0 ? wordPinyin : '');
+  });
+}
+
