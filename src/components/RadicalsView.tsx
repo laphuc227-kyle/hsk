@@ -1,4 +1,5 @@
 import React, { useState, useMemo, useEffect } from 'react';
+import { createPortal } from 'react-dom';
 import { motion, AnimatePresence } from 'motion/react';
 import {
   Search,
@@ -49,6 +50,30 @@ export const RadicalsView: React.FC<RadicalsViewProps> = ({
   const [searchQuery, setSearchQuery] = useState('');
   const [selectedStrokeFilter, setSelectedStrokeFilter] = useState<number | 'all'>('all');
   const [selectedRadical, setSelectedRadical] = useState<RadicalInfo | null>(null);
+
+  // Detect compact mobile landscape (phone rotated horizontally)
+  const [isCompactLandscape, setIsCompactLandscape] = useState<boolean>(() => {
+    if (typeof window === 'undefined') return false;
+    return Math.min(window.innerWidth, window.innerHeight) < 640 && window.innerWidth > window.innerHeight;
+  });
+
+  useEffect(() => {
+    const updateOrientation = () => {
+      setIsCompactLandscape(
+        Math.min(window.innerWidth, window.innerHeight) < 640 && window.innerWidth > window.innerHeight
+      );
+    };
+    const handleOrientation = () => {
+      updateOrientation();
+      setTimeout(updateOrientation, 120);
+    };
+    window.addEventListener('resize', updateOrientation);
+    window.addEventListener('orientationchange', handleOrientation);
+    return () => {
+      window.removeEventListener('resize', updateOrientation);
+      window.removeEventListener('orientationchange', handleOrientation);
+    };
+  }, []);
 
   // Automatically select and display detail of initial radical if passed
   useEffect(() => {
@@ -583,177 +608,387 @@ export const RadicalsView: React.FC<RadicalsViewProps> = ({
         </div>
       )}
 
-      {/* Radical Detail Modal / Slide-over */}
-      {selectedRadical && (
-        <div className="fixed inset-0 z-50 flex items-center justify-center p-4 bg-slate-950/80 backdrop-blur-md">
-          <div className="relative w-full max-w-lg bg-slate-900 border border-cyan-500/30 rounded-3xl p-6 sm:p-7 shadow-2xl text-left space-y-5 max-h-[90vh] overflow-y-auto">
-            {/* Header */}
-            <div className="flex items-start justify-between gap-3 border-b border-slate-800 pb-4">
-              <div className="flex items-center gap-4">
-                <div className="text-5xl sm:text-6xl font-serif font-black text-cyan-300">
-                  {selectedRadical.variants.length > 0
-                    ? selectedRadical.variants[0]
-                    : selectedRadical.hanzi}
-                </div>
-                <div>
-                  <div className="flex items-center gap-2">
-                    <h3 className="text-lg font-bold text-slate-100">
-                      Bộ {selectedRadical.hanViet}
-                    </h3>
-                    <span className="text-xs font-mono font-bold text-cyan-400 bg-cyan-950/60 px-2 py-0.5 rounded border border-cyan-500/30">
-                      {selectedRadical.pinyin}
-                    </span>
-                    <button
-                      onClick={() => speakChinese(selectedRadical.hanzi)}
-                      className="p-1 text-slate-400 hover:text-cyan-300 transition cursor-pointer"
-                      title="Nghe phát âm"
-                    >
-                      <Volume2 className="w-4 h-4" />
-                    </button>
-                  </div>
-                  <p className="text-xs text-slate-400 pt-0.5">
-                    Số thứ tự Khang Hy #{selectedRadical.number} · {selectedRadical.strokeCount} nét
-                    {selectedRadical.variants.length > 0 && (
-                      <span> · Biến thể: {selectedRadical.variants.join(', ')}</span>
+      {/* Radical Detail Modal / Slide-over (portaled to body so top app header never covers it) */}
+      {selectedRadical &&
+        typeof document !== 'undefined' &&
+        createPortal(
+          <div
+            className={`fixed inset-0 z-50 flex items-center justify-center bg-slate-950/80 backdrop-blur-md ${
+              isCompactLandscape ? 'p-0' : 'p-4'
+            }`}
+            onClick={handleCloseDetail}
+          >
+            <div
+              onClick={(e) => e.stopPropagation()}
+              className={`relative w-full bg-slate-900 text-left flex flex-col overflow-hidden text-slate-100 ${
+                isCompactLandscape
+                  ? 'h-full max-w-none max-h-none rounded-none border-0 shadow-none'
+                  : 'max-w-lg border border-cyan-500/30 rounded-3xl shadow-2xl max-h-[90vh]'
+              }`}
+            >
+              {/* Compact Landscape floating top-right close & optional back button */}
+              {isCompactLandscape && (
+                <div className="pointer-events-none absolute top-2.5 right-3 left-3 z-20 flex items-center justify-between gap-2">
+                  <div>
+                    {sourceCharacter && onReturnToCharacter && (
+                      <button
+                        type="button"
+                        onClick={() => {
+                          handleCloseDetail();
+                          onReturnToCharacter(sourceCharacter);
+                        }}
+                        className="pointer-events-auto flex items-center gap-1.5 px-2.5 py-1.5 text-xs font-bold text-cyan-200 bg-slate-950/85 hover:bg-cyan-950/90 backdrop-blur-md border border-cyan-500/40 rounded-xl shadow-lg transition cursor-pointer active:scale-95"
+                        title={`Quay về chi tiết chữ Hán: ${sourceCharacter.hanzi}`}
+                      >
+                        <ArrowLeft className="w-3.5 h-3.5 text-cyan-400" />
+                        <span>Quay về: {sourceCharacter.hanzi}</span>
+                      </button>
                     )}
-                  </p>
-                </div>
-              </div>
-
-              <div className="flex items-center gap-2">
-                {sourceCharacter && onReturnToCharacter && (
+                  </div>
                   <button
                     type="button"
-                    onClick={() => {
-                      handleCloseDetail();
-                      onReturnToCharacter(sourceCharacter);
-                    }}
-                    className="flex items-center gap-1.5 px-3 py-1.5 text-xs font-bold text-cyan-300 hover:text-cyan-100 bg-cyan-950/80 hover:bg-cyan-900 border border-cyan-500/50 rounded-xl transition cursor-pointer shadow-sm active:scale-95 group"
-                    title={`Quay về chi tiết chữ Hán: ${sourceCharacter.hanzi}`}
+                    onClick={handleCloseDetail}
+                    aria-label="Đóng chi tiết bộ thủ"
+                    className="pointer-events-auto p-2 text-slate-300 hover:text-white bg-slate-950/85 hover:bg-slate-800 backdrop-blur-md border border-slate-700/70 rounded-xl shadow-lg transition cursor-pointer active:scale-95"
                   >
-                    <ArrowLeft className="w-3.5 h-3.5 text-cyan-400 group-hover:-translate-x-0.5 transition-transform" />
-                    <span>Quay về: <strong className="text-cyan-200">{sourceCharacter.hanzi}</strong></span>
+                    <X className="w-4 h-4" />
                   </button>
-                )}
-                <button
-                  onClick={handleCloseDetail}
-                  className="p-1.5 text-slate-400 hover:text-slate-200 rounded-lg hover:bg-slate-800 transition cursor-pointer"
-                >
-                  <X className="w-4 h-4" />
-                </button>
-              </div>
-            </div>
+                </div>
+              )}
 
-            {/* Core Meaning & Philosophical Origin */}
-            <div className="space-y-3">
-              <div>
-                <h4 className="text-[11px] font-mono uppercase tracking-wider text-slate-400 font-bold mb-1">
-                  Ý nghĩa cốt lõi
-                </h4>
-                <p className="text-sm font-semibold text-slate-100">
-                  {selectedRadical.meaning}
-                </p>
-              </div>
+              {/* Scrollable Body */}
+              <div
+                className={`flex-1 overflow-y-auto ${
+                  isCompactLandscape ? 'px-4 py-3.5' : 'p-6 sm:p-7 space-y-5'
+                }`}
+              >
+                {isCompactLandscape ? (
+                  /* Mobile Landscape: 2-Column spacious layout without sticky bars */
+                  <div className="grid grid-cols-12 gap-4 items-start">
+                    {/* Left Column: Radical Hero + Meaning + Origin + Mnemonic */}
+                    <div className="col-span-6 space-y-3">
+                      <div
+                        className={`flex items-center gap-3 pb-2.5 border-b border-slate-800 ${
+                          sourceCharacter && onReturnToCharacter ? 'pt-8' : ''
+                        }`}
+                      >
+                        <div className="text-4xl font-serif font-black text-cyan-300 shrink-0 leading-none">
+                          {selectedRadical.variants.length > 0
+                            ? selectedRadical.variants[0]
+                            : selectedRadical.hanzi}
+                        </div>
+                        <div className="min-w-0">
+                          <div className="flex items-center gap-1.5 flex-wrap">
+                            <h3 className="text-base font-bold text-slate-100">
+                              Bộ {selectedRadical.hanViet}
+                            </h3>
+                            <span className="text-xs font-mono font-bold text-cyan-400 bg-cyan-950/60 px-1.5 py-0.5 rounded border border-cyan-500/30">
+                              {selectedRadical.pinyin}
+                            </span>
+                            <button
+                              type="button"
+                              onClick={() => speakChinese(selectedRadical.hanzi)}
+                              className="p-1 text-slate-400 hover:text-cyan-300 transition cursor-pointer"
+                              title="Nghe phát âm"
+                            >
+                              <Volume2 className="w-4 h-4" />
+                            </button>
+                          </div>
+                          <p className="text-[11px] text-slate-400 pt-0.5 tabular-nums">
+                            Khang Hy #{selectedRadical.number} · {selectedRadical.strokeCount} nét
+                            {selectedRadical.variants.length > 0 && (
+                              <span> · Biến thể: {selectedRadical.variants.join(', ')}</span>
+                            )}
+                          </p>
+                        </div>
+                      </div>
 
-              <div className="bg-slate-950/80 p-3.5 rounded-2xl border border-slate-800 space-y-1.5">
-                <h4 className="text-[11px] font-mono uppercase tracking-wider text-cyan-400 font-bold flex items-center gap-1.5">
-                  <Sparkles className="w-3.5 h-3.5" />
-                  Triết lý hình tượng & Nguồn gốc cổ nhân
-                </h4>
-                <p className="text-xs text-slate-300 leading-relaxed">
-                  {selectedRadical.description}
-                </p>
-              </div>
-
-              {/* Associative Mnemonic */}
-              <div className="bg-cyan-950/30 p-3.5 rounded-2xl border border-cyan-500/30 space-y-1">
-                <span className="text-[11px] font-bold text-cyan-300 flex items-center gap-1">
-                  💡 Mẹo ghi nhớ & suy đoán nghĩa từ:
-                </span>
-                <p className="text-xs text-cyan-200/90 leading-relaxed">
-                  {selectedRadical.associationTip}
-                </p>
-              </div>
-            </div>
-
-            {/* Characters in User's Library */}
-            <div className="space-y-2 pt-2 border-t border-slate-800">
-              <div className="flex items-center justify-between">
-                <h4 className="text-[11px] font-mono uppercase tracking-wider text-slate-400 font-bold">
-                  Từ vựng của bạn mang bộ này
-                </h4>
-                <span className="text-xs text-emerald-400 font-bold">
-                  {userRadicalGroups.find((g) => g.radicalInfo.id === selectedRadical.id)?.characters.length || 0} chữ
-                </span>
-              </div>
-
-              <div className="grid grid-cols-1 sm:grid-cols-2 gap-2 max-h-48 overflow-y-auto pr-1">
-                {(userRadicalGroups.find((g) => g.radicalInfo.id === selectedRadical.id)?.characters || []).map((c) => (
-                  <div
-                    key={c.id}
-                    onClick={() => {
-                      handleCloseDetail();
-                      onSelectCharacter(c);
-                    }}
-                    className="p-2.5 bg-slate-950 hover:bg-slate-800/80 border border-slate-800 hover:border-cyan-500/40 rounded-xl transition cursor-pointer flex items-center justify-between gap-2"
-                  >
-                    <div className="flex items-center gap-2.5">
-                      <span className="text-2xl font-serif font-bold text-slate-100">{c.hanzi}</span>
                       <div>
-                        <div className="text-xs font-mono text-cyan-400 font-semibold">{c.pinyin}</div>
-                        <div className="text-[11px] text-slate-300 line-clamp-1">{c.meaning}</div>
+                        <h4 className="text-[10px] font-mono uppercase tracking-wider text-slate-400 font-bold mb-0.5">
+                          Ý nghĩa cốt lõi
+                        </h4>
+                        <p className="text-sm font-semibold text-slate-100 leading-snug">
+                          {selectedRadical.meaning}
+                        </p>
+                      </div>
+
+                      <div className="bg-slate-950/80 p-3 rounded-xl border border-slate-800 space-y-1">
+                        <h4 className="text-[10px] font-mono uppercase tracking-wider text-cyan-400 font-bold flex items-center gap-1.5">
+                          <Sparkles className="w-3 h-3 shrink-0" />
+                          Triết lý hình tượng & Nguồn gốc cổ nhân
+                        </h4>
+                        <p className="text-xs text-slate-300 leading-relaxed">
+                          {selectedRadical.description}
+                        </p>
+                      </div>
+
+                      <div className="bg-cyan-950/30 p-3 rounded-xl border border-cyan-500/30 space-y-1">
+                        <span className="text-[11px] font-bold text-cyan-300 block">
+                          💡 Mẹo ghi nhớ & suy đoán nghĩa từ:
+                        </span>
+                        <p className="text-xs text-cyan-200/90 leading-relaxed">
+                          {selectedRadical.associationTip}
+                        </p>
                       </div>
                     </div>
-                    <span className="text-[10px] font-mono text-emerald-400 font-bold">{c.srs.masteryLevel}%</span>
+
+                    {/* Right Column: User Vocabulary + Common HSK Examples + Actions */}
+                    <div className="col-span-6 space-y-3 pr-9">
+                      <div className="space-y-1.5">
+                        <div className="flex items-center justify-between">
+                          <h4 className="text-[10px] font-mono uppercase tracking-wider text-slate-400 font-bold">
+                            Từ vựng của bạn mang bộ này
+                          </h4>
+                          <span className="text-xs text-emerald-400 font-bold tabular-nums">
+                            {userRadicalGroups.find((g) => g.radicalInfo.id === selectedRadical.id)?.characters.length || 0} chữ
+                          </span>
+                        </div>
+
+                        <div className="grid grid-cols-1 gap-1.5">
+                          {(userRadicalGroups.find((g) => g.radicalInfo.id === selectedRadical.id)?.characters || []).map((c) => (
+                            <div
+                              key={c.id}
+                              onClick={() => {
+                                handleCloseDetail();
+                                onSelectCharacter(c);
+                              }}
+                              className="p-2 bg-slate-950 hover:bg-slate-800/80 border border-slate-800 hover:border-cyan-500/40 rounded-xl transition cursor-pointer flex items-center justify-between gap-2"
+                            >
+                              <div className="flex items-center gap-2 min-w-0">
+                                <span className="text-xl font-serif font-bold text-slate-100 shrink-0">{c.hanzi}</span>
+                                <div className="min-w-0">
+                                  <div className="text-xs font-mono text-cyan-400 font-semibold truncate">{c.pinyin}</div>
+                                  <div className="text-[11px] text-slate-300 line-clamp-1">{c.meaning}</div>
+                                </div>
+                              </div>
+                              <span className="text-[10px] font-mono text-emerald-400 font-bold tabular-nums shrink-0">{c.srs.masteryLevel}%</span>
+                            </div>
+                          ))}
+                          {(userRadicalGroups.find((g) => g.radicalInfo.id === selectedRadical.id)?.characters.length || 0) === 0 && (
+                            <p className="text-xs text-slate-400 py-1.5">
+                              Bạn chưa có chữ Hán nào mang bộ này trong bộ từ. Thêm từ mới để mở khóa!
+                            </p>
+                          )}
+                        </div>
+                      </div>
+
+                      <div className="space-y-1.5 pt-2 border-t border-slate-800">
+                        <h4 className="text-[10px] font-mono uppercase tracking-wider text-slate-400 font-bold">
+                          Chữ Hán phổ biến mang bộ này
+                        </h4>
+                        <div className="flex flex-wrap items-center gap-1.5">
+                          {selectedRadical.exampleCharacters.map((ex, idx) => (
+                            <span
+                              key={idx}
+                              className="px-2 py-1 bg-slate-950 border border-slate-800 rounded-lg text-xs flex items-center gap-1"
+                            >
+                              <span className="text-sm font-serif font-bold text-slate-200">{ex.hanzi}</span>
+                              <span className="font-mono text-cyan-400 text-[10px]">{ex.pinyin}</span>
+                              <span className="text-slate-400 text-[10px]">({ex.meaning})</span>
+                            </span>
+                          ))}
+                        </div>
+                      </div>
+
+                      <div className="pt-2 border-t border-slate-800 flex items-center justify-end gap-2">
+                        {onOpenTutor && (
+                          <button
+                            type="button"
+                            onClick={() => {
+                              const rad = selectedRadical;
+                              handleCloseDetail();
+                              onOpenTutor(`Bộ ${rad.hanViet} (${rad.variants.length > 0 ? rad.variants[0] : rad.hanzi})`);
+                            }}
+                            className="px-3.5 py-2 bg-gradient-to-r from-cyan-500 to-teal-400 hover:from-cyan-400 hover:to-teal-300 text-slate-950 font-bold text-xs rounded-xl shadow transition flex items-center gap-1.5 cursor-pointer active:scale-95"
+                          >
+                            <Sparkles className="w-3.5 h-3.5 stroke-[2.5]" />
+                            <span>Hỏi Gia Sư AI về bộ này</span>
+                          </button>
+                        )}
+                        <button
+                          type="button"
+                          onClick={handleCloseDetail}
+                          className="px-3.5 py-2 text-xs font-medium text-slate-300 hover:text-white bg-slate-800/70 hover:bg-slate-800 rounded-xl transition cursor-pointer"
+                        >
+                          Đóng
+                        </button>
+                      </div>
+                    </div>
                   </div>
-                ))}
-                {(userRadicalGroups.find((g) => g.radicalInfo.id === selectedRadical.id)?.characters.length || 0) === 0 && (
-                  <p className="text-xs text-slate-400 col-span-2 py-2">
-                    Bạn chưa có chữ Hán nào mang bộ này trong bộ từ. Thêm từ mới để mở khóa!
-                  </p>
+                ) : (
+                  /* Portrait / Desktop Modal Layout */
+                  <>
+                    {/* Header */}
+                    <div className="flex items-start justify-between gap-3 border-b border-slate-800 pb-4">
+                      <div className="flex items-center gap-4">
+                        <div className="text-5xl sm:text-6xl font-serif font-black text-cyan-300">
+                          {selectedRadical.variants.length > 0
+                            ? selectedRadical.variants[0]
+                            : selectedRadical.hanzi}
+                        </div>
+                        <div>
+                          <div className="flex items-center gap-2">
+                            <h3 className="text-lg font-bold text-slate-100">
+                              Bộ {selectedRadical.hanViet}
+                            </h3>
+                            <span className="text-xs font-mono font-bold text-cyan-400 bg-cyan-950/60 px-2 py-0.5 rounded border border-cyan-500/30">
+                              {selectedRadical.pinyin}
+                            </span>
+                            <button
+                              onClick={() => speakChinese(selectedRadical.hanzi)}
+                              className="p-1 text-slate-400 hover:text-cyan-300 transition cursor-pointer"
+                              title="Nghe phát âm"
+                            >
+                              <Volume2 className="w-4 h-4" />
+                            </button>
+                          </div>
+                          <p className="text-xs text-slate-400 pt-0.5">
+                            Số thứ tự Khang Hy #{selectedRadical.number} · {selectedRadical.strokeCount} nét
+                            {selectedRadical.variants.length > 0 && (
+                              <span> · Biến thể: {selectedRadical.variants.join(', ')}</span>
+                            )}
+                          </p>
+                        </div>
+                      </div>
+
+                      <div className="flex items-center gap-2">
+                        {sourceCharacter && onReturnToCharacter && (
+                          <button
+                            type="button"
+                            onClick={() => {
+                              handleCloseDetail();
+                              onReturnToCharacter(sourceCharacter);
+                            }}
+                            className="flex items-center gap-1.5 px-3 py-1.5 text-xs font-bold text-cyan-300 hover:text-cyan-100 bg-cyan-950/80 hover:bg-cyan-900 border border-cyan-500/50 rounded-xl transition cursor-pointer shadow-sm active:scale-95 group"
+                            title={`Quay về chi tiết chữ Hán: ${sourceCharacter.hanzi}`}
+                          >
+                            <ArrowLeft className="w-3.5 h-3.5 text-cyan-400 group-hover:-translate-x-0.5 transition-transform" />
+                            <span>Quay về: <strong className="text-cyan-200">{sourceCharacter.hanzi}</strong></span>
+                          </button>
+                        )}
+                        <button
+                          onClick={handleCloseDetail}
+                          className="p-1.5 text-slate-400 hover:text-slate-200 rounded-lg hover:bg-slate-800 transition cursor-pointer"
+                        >
+                          <X className="w-4 h-4" />
+                        </button>
+                      </div>
+                    </div>
+
+                    {/* Core Meaning & Philosophical Origin */}
+                    <div className="space-y-3">
+                      <div>
+                        <h4 className="text-[11px] font-mono uppercase tracking-wider text-slate-400 font-bold mb-1">
+                          Ý nghĩa cốt lõi
+                        </h4>
+                        <p className="text-sm font-semibold text-slate-100">
+                          {selectedRadical.meaning}
+                        </p>
+                      </div>
+
+                      <div className="bg-slate-950/80 p-3.5 rounded-2xl border border-slate-800 space-y-1.5">
+                        <h4 className="text-[11px] font-mono uppercase tracking-wider text-cyan-400 font-bold flex items-center gap-1.5">
+                          <Sparkles className="w-3.5 h-3.5" />
+                          Triết lý hình tượng & Nguồn gốc cổ nhân
+                        </h4>
+                        <p className="text-xs text-slate-300 leading-relaxed">
+                          {selectedRadical.description}
+                        </p>
+                      </div>
+
+                      {/* Associative Mnemonic */}
+                      <div className="bg-cyan-950/30 p-3.5 rounded-2xl border border-cyan-500/30 space-y-1">
+                        <span className="text-[11px] font-bold text-cyan-300 flex items-center gap-1">
+                          💡 Mẹo ghi nhớ & suy đoán nghĩa từ:
+                        </span>
+                        <p className="text-xs text-cyan-200/90 leading-relaxed">
+                          {selectedRadical.associationTip}
+                        </p>
+                      </div>
+                    </div>
+
+                    {/* Characters in User's Library */}
+                    <div className="space-y-2 pt-2 border-t border-slate-800">
+                      <div className="flex items-center justify-between">
+                        <h4 className="text-[11px] font-mono uppercase tracking-wider text-slate-400 font-bold">
+                          Từ vựng của bạn mang bộ này
+                        </h4>
+                        <span className="text-xs text-emerald-400 font-bold">
+                          {userRadicalGroups.find((g) => g.radicalInfo.id === selectedRadical.id)?.characters.length || 0} chữ
+                        </span>
+                      </div>
+
+                      <div className="grid grid-cols-1 sm:grid-cols-2 gap-2 max-h-48 overflow-y-auto pr-1">
+                        {(userRadicalGroups.find((g) => g.radicalInfo.id === selectedRadical.id)?.characters || []).map((c) => (
+                          <div
+                            key={c.id}
+                            onClick={() => {
+                              handleCloseDetail();
+                              onSelectCharacter(c);
+                            }}
+                            className="p-2.5 bg-slate-950 hover:bg-slate-800/80 border border-slate-800 hover:border-cyan-500/40 rounded-xl transition cursor-pointer flex items-center justify-between gap-2"
+                          >
+                            <div className="flex items-center gap-2.5">
+                              <span className="text-2xl font-serif font-bold text-slate-100">{c.hanzi}</span>
+                              <div>
+                                <div className="text-xs font-mono text-cyan-400 font-semibold">{c.pinyin}</div>
+                                <div className="text-[11px] text-slate-300 line-clamp-1">{c.meaning}</div>
+                              </div>
+                            </div>
+                            <span className="text-[10px] font-mono text-emerald-400 font-bold">{c.srs.masteryLevel}%</span>
+                          </div>
+                        ))}
+                        {(userRadicalGroups.find((g) => g.radicalInfo.id === selectedRadical.id)?.characters.length || 0) === 0 && (
+                          <p className="text-xs text-slate-400 col-span-2 py-2">
+                            Bạn chưa có chữ Hán nào mang bộ này trong bộ từ. Thêm từ mới để mở khóa!
+                          </p>
+                        )}
+                      </div>
+                    </div>
+
+                    {/* Common HSK Examples */}
+                    <div className="space-y-2 pt-2 border-t border-slate-800">
+                      <h4 className="text-[11px] font-mono uppercase tracking-wider text-slate-400 font-bold">
+                        Chữ Hán phổ biến mang bộ này trong tiếng Trung
+                      </h4>
+                      <div className="flex flex-wrap items-center gap-2">
+                        {selectedRadical.exampleCharacters.map((ex, idx) => (
+                          <span
+                            key={idx}
+                            className="px-2.5 py-1 bg-slate-950 border border-slate-800 rounded-xl text-xs flex items-center gap-1.5"
+                          >
+                            <span className="text-base font-serif font-bold text-slate-200">{ex.hanzi}</span>
+                            <span className="font-mono text-cyan-400 text-[10px]">{ex.pinyin}</span>
+                            <span className="text-slate-400 text-[11px]">({ex.meaning})</span>
+                          </span>
+                        ))}
+                      </div>
+                    </div>
+
+                    {/* Footer action: Ask AI Tutor about this radical */}
+                    {onOpenTutor && (
+                      <div className="pt-2 border-t border-slate-800 flex justify-end">
+                        <button
+                          type="button"
+                          onClick={() => {
+                            const rad = selectedRadical;
+                            handleCloseDetail();
+                            onOpenTutor(`Bộ ${rad.hanViet} (${rad.variants.length > 0 ? rad.variants[0] : rad.hanzi})`);
+                          }}
+                          className="px-4 py-2 bg-gradient-to-r from-cyan-500 to-teal-400 hover:from-cyan-400 hover:to-teal-300 text-slate-950 font-bold text-xs rounded-xl shadow transition flex items-center gap-1.5 cursor-pointer active:scale-95"
+                        >
+                          <Sparkles className="w-3.5 h-3.5 stroke-[2.5]" />
+                          <span>Hỏi Gia Sư AI về bộ này</span>
+                        </button>
+                      </div>
+                    )}
+                  </>
                 )}
               </div>
             </div>
-
-            {/* Common HSK Examples */}
-            <div className="space-y-2 pt-2 border-t border-slate-800">
-              <h4 className="text-[11px] font-mono uppercase tracking-wider text-slate-400 font-bold">
-                Chữ Hán phổ biến mang bộ này trong tiếng Trung
-              </h4>
-              <div className="flex flex-wrap items-center gap-2">
-                {selectedRadical.exampleCharacters.map((ex, idx) => (
-                  <span
-                    key={idx}
-                    className="px-2.5 py-1 bg-slate-950 border border-slate-800 rounded-xl text-xs flex items-center gap-1.5"
-                  >
-                    <span className="text-base font-serif font-bold text-slate-200">{ex.hanzi}</span>
-                    <span className="font-mono text-cyan-400 text-[10px]">{ex.pinyin}</span>
-                    <span className="text-slate-400 text-[11px]">({ex.meaning})</span>
-                  </span>
-                ))}
-              </div>
-            </div>
-
-            {/* Footer action: Ask AI Tutor about this radical */}
-            {onOpenTutor && (
-              <div className="pt-2 border-t border-slate-800 flex justify-end">
-                <button
-                  type="button"
-                  onClick={() => {
-                    const rad = selectedRadical;
-                    handleCloseDetail();
-                    onOpenTutor(`Bộ ${rad.hanViet} (${rad.variants.length > 0 ? rad.variants[0] : rad.hanzi})`);
-                  }}
-                  className="px-4 py-2 bg-gradient-to-r from-cyan-500 to-teal-400 hover:from-cyan-400 hover:to-teal-300 text-slate-950 font-bold text-xs rounded-xl shadow transition flex items-center gap-1.5 cursor-pointer active:scale-95"
-                >
-                  <Sparkles className="w-3.5 h-3.5 stroke-[2.5]" />
-                  <span>Hỏi Gia Sư AI về bộ này</span>
-                </button>
-              </div>
-            )}
-          </div>
-        </div>
-      )}
+          </div>,
+          document.body
+        )}
     </div>
   );
 };

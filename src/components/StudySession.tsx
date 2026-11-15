@@ -1,6 +1,7 @@
 import React, { useState, useEffect, useRef } from 'react';
+import { createPortal } from 'react-dom';
 import { motion, AnimatePresence } from 'motion/react';
-import { Volume2, CheckCircle, XCircle, ArrowRight, RefreshCw, Sparkles, BookOpen, Clock, ShieldCheck, Award, Filter, Eye, EyeOff, FileQuestion, PenTool } from 'lucide-react';
+import { Volume2, CheckCircle, XCircle, ArrowRight, RefreshCw, Sparkles, BookOpen, Clock, ShieldCheck, Award, Filter, Eye, EyeOff, FileQuestion, PenTool, X } from 'lucide-react';
 import { Character, QuizQuestion, StudySessionMode, QuestionType, WordList } from '../types';
 import { selectCharactersForSession, generateQuestionForCharacter, calculateSRSUpdate } from '../services/srs';
 import { generateSentenceClozeQuestions } from '../services/sentenceCloze';
@@ -44,7 +45,11 @@ export const StudySession: React.FC<StudySessionProps> = ({
   const [dragOffset, setDragOffset] = useState(0);
   const [strokeRevealed, setStrokeRevealed] = useState<boolean>(false);
   const [isStrokeHoldBeforeReveal, setIsStrokeHoldBeforeReveal] = useState<boolean>(false);
-  const [showStrokeMeaningHint, setShowStrokeMeaningHint] = useState<boolean>(false);
+  const [preferPortraitStrokeMode, setPreferPortraitStrokeMode] = useState<boolean>(false);
+  const [isCompactLandscape, setIsCompactLandscape] = useState<boolean>(() => {
+    if (typeof window === 'undefined') return false;
+    return Math.min(window.innerWidth, window.innerHeight) < 640 && window.innerWidth > window.innerHeight;
+  });
   const strokeRevealTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
 
   const clearStrokeRevealTimer = () => {
@@ -55,8 +60,21 @@ export const StudySession: React.FC<StudySessionProps> = ({
   };
 
   useEffect(() => {
+    const updateOrientation = () => {
+      setIsCompactLandscape(
+        Math.min(window.innerWidth, window.innerHeight) < 640 && window.innerWidth > window.innerHeight
+      );
+    };
+    const handleOrientation = () => {
+      updateOrientation();
+      setTimeout(updateOrientation, 120);
+    };
+    window.addEventListener('resize', updateOrientation);
+    window.addEventListener('orientationchange', handleOrientation);
     return () => {
       clearStrokeRevealTimer();
+      window.removeEventListener('resize', updateOrientation);
+      window.removeEventListener('orientationchange', handleOrientation);
     };
   }, []);
 
@@ -221,7 +239,6 @@ export const StudySession: React.FC<StudySessionProps> = ({
     clearStrokeRevealTimer();
     setStrokeRevealed(false);
     setIsStrokeHoldBeforeReveal(false);
-    setShowStrokeMeaningHint(false);
   }, [currentIndex, currentQ]);
 
   const handleFlipCard = () => {
@@ -784,12 +801,60 @@ export const StudySession: React.FC<StudySessionProps> = ({
   const currentHanziChars = (Array.from(currentQ.character.hanzi) as string[]).filter((ch) =>
     /\p{Script=Han}/u.test(ch)
   );
-  const isCompoundStroke = currentQ.type === 'stroke_writing' && currentHanziChars.length > 1;
+
+  const renderUnifiedStrokeWriter = () => (
+    <CompoundStrokeWriter
+      key={`${currentIndex}-${currentQ.character.hanzi}`}
+      hanzi={currentQ.character.hanzi}
+      pinyin={currentQ.character.pinyin}
+      currentQuestionNum={currentIndex + 1}
+      totalQuestions={questions.length}
+      isHoldTransition={isStrokeHoldBeforeReveal}
+      forcePortraitMode={preferPortraitStrokeMode}
+      onForcePortraitModeChange={setPreferPortraitStrokeMode}
+      onExit={onFinishSession}
+      onSkipHold={() => {
+        clearStrokeRevealTimer();
+        setIsStrokeHoldBeforeReveal(false);
+        setStrokeRevealed(true);
+      }}
+      onComplete={() => {
+        if (typeof navigator !== 'undefined' && 'vibrate' in navigator) {
+          try {
+            navigator.vibrate([40, 50, 40]);
+          } catch {
+            // ignore
+          }
+        }
+        clearStrokeRevealTimer();
+        setIsStrokeHoldBeforeReveal(true);
+        strokeRevealTimerRef.current = setTimeout(() => {
+          setIsStrokeHoldBeforeReveal(false);
+          setStrokeRevealed(true);
+        }, 1500);
+      }}
+      onSkip={() => {
+        clearStrokeRevealTimer();
+        setIsStrokeHoldBeforeReveal(false);
+        setSessionResults((prev) => [
+          ...prev,
+          {
+            question: currentQ,
+            userAnswer: 'Xem đáp án (Bỏ qua viết)',
+            isCorrect: false,
+            ratingLabel: 'Chưa nhớ',
+          },
+        ]);
+        setStrokeRevealed(true);
+        saveAnswerSRS(0);
+      }}
+    />
+  );
 
   return (
     <div
       className={`mx-auto text-slate-100 ${
-        isCompoundStroke && !strokeRevealed ? 'max-w-3xl' : 'max-w-2xl'
+        currentQ.type === 'stroke_writing' && !strokeRevealed ? 'max-w-4xl' : 'max-w-2xl'
       } ${mode === 'stroke_writing' ? 'space-y-3 sm:space-y-5' : 'space-y-6'}`}
     >
       {/* Session Header Bar */}
@@ -1360,211 +1425,213 @@ export const StudySession: React.FC<StudySessionProps> = ({
               )}
             </div>
           ) : currentQ.type === 'stroke_writing' ? (
-            /* Question Type: Stroke Writing Practice Flashcard (Luyện viết nét) */
+            /* Question Type: Unified Landscape-First Stroke Writing Practice (Single & Compound Words) */
             <div className="space-y-4">
-              <AnimatePresence mode="wait">
-                {!strokeRevealed ? (
-                  isCompoundStroke ? (
-                    /* FRONT (COMPOUND WORD): 2-Box Landscape / Sliding Canvas WITHOUT top Pinyin or Meaning hint */
+              {isCompactLandscape && typeof document !== 'undefined' ? (
+                /* Mobile Landscape: Front & Revealed portals render directly without AnimatePresence wrapping createPortal */
+                !strokeRevealed ? (
+                  <div className="flex flex-col items-center relative text-center w-full mx-auto">
+                    {renderUnifiedStrokeWriter()}
+                  </div>
+                ) : (
+                  createPortal(
                     <motion.div
-                      key={`stroke-compound-front-${currentIndex}`}
-                      initial={{ opacity: 0, y: 12, scale: 0.98 }}
-                      animate={{ opacity: 1, y: 0, scale: 1 }}
-                      exit={{ opacity: 0, y: -18, scale: 0.94, filter: 'blur(4px)' }}
-                      transition={{ duration: 0.35, ease: [0.22, 1, 0.36, 1] }}
-                      className="flex flex-col items-center relative text-center w-full mx-auto"
+                      key={`stroke-back-landscape-${currentIndex}`}
+                      initial={{ opacity: 0, scale: 0.96, y: 10 }}
+                      animate={{ opacity: 1, scale: 1, y: 0 }}
+                      transition={{ duration: 0.28, ease: [0.22, 1, 0.36, 1] }}
+                      className="fixed inset-0 z-40 bg-[#090D16] text-slate-100 flex flex-col justify-between p-2.5 px-[max(0.75rem,env(safe-area-inset-left))] pr-[max(0.75rem,env(safe-area-inset-right))] overflow-y-auto select-none"
                     >
-                      <CompoundStrokeWriter
-                        key={`${currentIndex}-${currentQ.character.hanzi}`}
-                        hanzi={currentQ.character.hanzi}
-                        pinyin={currentQ.character.pinyin}
-                        currentQuestionNum={currentIndex + 1}
-                        totalQuestions={questions.length}
-                        isHoldTransition={isStrokeHoldBeforeReveal}
-                        onExit={onFinishSession}
-                        onSkipHold={() => {
-                          clearStrokeRevealTimer();
-                          setIsStrokeHoldBeforeReveal(false);
-                          setStrokeRevealed(true);
-                        }}
-                        onComplete={() => {
-                          if (typeof navigator !== 'undefined' && 'vibrate' in navigator) {
-                            try {
-                              navigator.vibrate([40, 50, 40]);
-                            } catch {
-                              // ignore
-                            }
-                          }
-                          clearStrokeRevealTimer();
-                          setIsStrokeHoldBeforeReveal(true);
-                          strokeRevealTimerRef.current = setTimeout(() => {
-                            setIsStrokeHoldBeforeReveal(false);
-                            setStrokeRevealed(true);
-                          }, 1500);
-                        }}
-                        onSkip={() => {
-                          clearStrokeRevealTimer();
-                          setIsStrokeHoldBeforeReveal(false);
-                          setSessionResults((prev) => [
-                            ...prev,
-                            {
-                              question: currentQ,
-                              userAnswer: 'Xem đáp án (Bỏ qua viết)',
-                              isCorrect: false,
-                              ratingLabel: 'Chưa nhớ',
-                            },
-                          ]);
-                          setStrokeRevealed(true);
-                          saveAnswerSRS(0);
-                        }}
-                      />
-                    </motion.div>
-                  ) : (
-                  /* FRONT (SINGLE CHARACTER): Drawing Canvas ONLY */
-                  <motion.div
-                    key={`stroke-front-${currentIndex}`}
-                    initial={{ opacity: 0, y: 12, scale: 0.98 }}
-                    animate={{ opacity: 1, y: 0, scale: 1 }}
-                    exit={{ opacity: 0, y: -18, scale: 0.94, filter: 'blur(4px)' }}
-                    transition={{ duration: 0.35, ease: [0.22, 1, 0.36, 1] }}
-                    className="flex flex-col items-center space-y-3 relative text-center w-full max-w-md mx-auto"
-                  >
-                    {/* Subtle top indicator */}
-                    <div className="flex items-center justify-between w-full mb-0.5">
-                      <span className="text-[11px] font-mono font-bold uppercase tracking-wider px-2.5 py-1 rounded-xl bg-rose-500/10 text-rose-300 border border-rose-500/30 flex items-center gap-1.5">
-                        <PenTool className="w-3.5 h-3.5 text-rose-400" />
-                        Luyện viết nét mở khóa
-                      </span>
-
-                      {/* Hint toggle */}
-                      <button
-                        type="button"
-                        onClick={() => setShowStrokeMeaningHint((prev) => !prev)}
-                        className={`text-xs px-2.5 py-1 rounded-xl border transition cursor-pointer flex items-center gap-1.5 ${
-                          showStrokeMeaningHint
-                            ? 'bg-amber-500/20 text-amber-300 border-amber-500/40'
-                            : 'bg-slate-800/80 text-slate-400 hover:text-slate-200 border-slate-700/60'
-                        }`}
-                        title="Xem gợi ý nghĩa nếu quên chữ cần viết"
-                      >
-                        <Sparkles className="w-3 h-3 text-amber-400" />
-                        <span>{showStrokeMeaningHint ? 'Ẩn nghĩa' : 'Gợi ý nghĩa'}</span>
-                      </button>
-                    </div>
-
-                    {/* Optional Hint Dropdown - Only Meaning, no radical or stroke count */}
-                    <AnimatePresence>
-                      {showStrokeMeaningHint && (
-                        <motion.div
-                          initial={{ opacity: 0, height: 0 }}
-                          animate={{ opacity: 1, height: 'auto' }}
-                          exit={{ opacity: 0, height: 0 }}
-                          className="w-full bg-amber-500/10 border border-amber-500/30 rounded-xl p-2.5 text-left space-y-0.5 shadow-inner overflow-hidden"
-                        >
-                          <p className="text-xs text-amber-200 font-medium leading-relaxed">
-                            <span className="font-bold text-amber-400">Nghĩa tiếng Việt:</span> {currentQ.character.meaning}
-                          </p>
-                        </motion.div>
-                      )}
-                    </AnimatePresence>
-
-                    {/* Canvas in Quiz Mode (outline shown for 2.5s then auto hides, pinyin shown, controls docked at bottom on mobile) */}
-                    <StrokeWriterCanvas
-                      key={`${currentIndex}-${currentQ.character.hanzi}`}
-                      hanzi={currentQ.character.hanzi}
-                      pinyin={currentQ.character.pinyin}
-                      autoStartQuiz={true}
-                      hideOutlineByDefault={true}
-                      previewOutlineSeconds={2.5}
-                      dockControlsOnMobile={true}
-                      onComplete={() => {
-                        if (typeof navigator !== 'undefined' && 'vibrate' in navigator) {
-                          try {
-                            navigator.vibrate([40, 50, 40]);
-                          } catch (e) {
-                            // ignore
-                          }
-                        }
-                        clearStrokeRevealTimer();
-                        setIsStrokeHoldBeforeReveal(true);
-                        strokeRevealTimerRef.current = setTimeout(() => {
-                          setIsStrokeHoldBeforeReveal(false);
-                          setStrokeRevealed(true);
-                        }, 1500);
-                      }}
-                    />
-
-                    {/* Hold status progress bar OR Skip action below canvas */}
-                    {isStrokeHoldBeforeReveal ? (
-                      <motion.div
-                        initial={{ opacity: 0, y: 6 }}
-                        animate={{ opacity: 1, y: 0 }}
-                        className="w-full pt-1 space-y-1.5"
-                      >
-                        <div className="flex items-center justify-between text-[11px] font-medium text-emerald-300 px-1">
-                          <span className="flex items-center gap-1.5">
-                            <Sparkles className="w-3.5 h-3.5 text-emerald-400 animate-pulse" />
-                            <span>Tuyệt vời! Đang mở khóa thông tin...</span>
+                      {/* Top Strip */}
+                      <div className="flex items-center justify-between gap-2 pb-2 border-b border-slate-800/90 shrink-0">
+                        <div className="flex items-center gap-2 min-w-0">
+                          <span className="px-2 py-0.5 rounded-md bg-slate-900 border border-slate-800 text-[11px] font-mono font-bold text-slate-300 shrink-0">
+                            Câu {currentIndex + 1}/{questions.length}
                           </span>
+                          <span className="w-2 h-2 rounded-full bg-emerald-400 animate-ping shrink-0" />
+                          <span className="text-xs font-bold text-emerald-300 truncate">
+                            Hoàn thành nét viết chính xác!
+                          </span>
+                        </div>
+
+                        <div className="flex items-center gap-1.5 shrink-0">
+                          <button
+                            type="button"
+                            onClick={handlePlayAudio}
+                            className="px-2.5 py-1 rounded-xl text-xs font-semibold bg-cyan-950/80 hover:bg-cyan-900 text-cyan-300 border border-cyan-500/40 flex items-center gap-1 transition cursor-pointer active:scale-95"
+                          >
+                            <Volume2 className="w-3.5 h-3.5 text-cyan-400" />
+                            <span>Phát âm</span>
+                          </button>
+                          <button
+                            type="button"
+                            onClick={() => onOpenCharacterDetail(currentQ.character)}
+                            className="px-2.5 py-1 rounded-xl text-xs font-semibold bg-slate-800 hover:bg-slate-700 text-cyan-300 border border-cyan-500/40 flex items-center gap-1 transition cursor-pointer active:scale-95"
+                          >
+                            <BookOpen className="w-3.5 h-3.5 text-cyan-400" />
+                            <span>Chi tiết</span>
+                          </button>
+                          <button
+                            type="button"
+                            onClick={onFinishSession}
+                            className="p-1.5 rounded-xl text-xs font-medium text-slate-400 hover:text-slate-200 hover:bg-slate-800/80 transition cursor-pointer"
+                            title="Thoát phiên học"
+                          >
+                            <X className="w-4 h-4" />
+                          </button>
+                        </div>
+                      </div>
+
+                      {/* 2-Column Main Content */}
+                      <div className="grid grid-cols-[1.15fr_1fr] gap-3 items-center my-auto py-1.5 max-w-4xl w-full mx-auto">
+                        {/* Left Column: Character Details */}
+                        <div className="bg-slate-900/75 border border-slate-800 rounded-2xl p-3 text-center space-y-1.5">
+                          <div className="font-serif font-black text-4xl text-emerald-300 drop-shadow-md leading-tight select-text">
+                            {currentQ.character.hanzi}
+                          </div>
+
+                          <div className="flex items-center justify-center flex-wrap gap-2">
+                            <span className="text-lg font-mono font-bold text-cyan-300">
+                              {currentQ.character.pinyin}
+                            </span>
+                            <span className="text-[11px] font-bold text-teal-300 uppercase tracking-wider px-2 py-0.5 rounded-lg bg-teal-500/10 border border-teal-500/30">
+                              {currentQ.character.hanViet}
+                            </span>
+                          </div>
+
+                          <p className="text-sm font-semibold text-slate-100 leading-snug line-clamp-2">
+                            {currentQ.character.meaning}
+                          </p>
+
+                          {currentHanziChars.length > 1 ? (
+                            <div className="flex items-center justify-center flex-wrap gap-1 pt-0.5">
+                              {currentHanziChars.map((ch, idx) => {
+                                const existing = allCharacters.find((c) => c.hanzi === ch);
+                                const dictInfo = existing || lookupBuiltIn(ch);
+                                return (
+                                  <span
+                                    key={idx}
+                                    className="px-2 py-0.5 rounded-lg bg-slate-950 border border-slate-800 text-[11px] flex items-center gap-1"
+                                  >
+                                    <span className="font-serif font-bold text-emerald-300">{ch}</span>
+                                    {dictInfo?.pinyin && (
+                                      <span className="font-mono text-[10px] text-cyan-300">{dictInfo.pinyin}</span>
+                                    )}
+                                    {dictInfo?.hanViet && (
+                                      <span className="text-[9px] font-bold text-teal-400 uppercase">{dictInfo.hanViet}</span>
+                                    )}
+                                  </span>
+                                );
+                              })}
+                            </div>
+                          ) : (
+                            <div className="flex items-center justify-center gap-1.5 text-[11px] text-slate-400 font-mono">
+                              <span className="px-2 py-0.5 rounded-lg bg-slate-950 border border-slate-800">
+                                Bộ: {currentQ.character.radical || '—'}
+                              </span>
+                              <span className="px-2 py-0.5 rounded-lg bg-slate-950 border border-slate-800">
+                                {currentQ.character.strokeCount || currentQ.character.hanzi.length} nét
+                              </span>
+                            </div>
+                          )}
+
+                          {currentQ.character.mnemonic && (
+                            <div className="text-[11px] text-emerald-300 bg-emerald-500/10 px-2.5 py-1.5 rounded-xl border border-emerald-500/30 flex items-start gap-1.5 text-left">
+                              <span className="leading-none shrink-0">💡</span>
+                              <span className="line-clamp-2 text-slate-200 leading-snug">
+                                {currentQ.character.mnemonic}
+                              </span>
+                            </div>
+                          )}
+                        </div>
+
+                        {/* Right Column: Next Action + 2x2 SRS Ratings */}
+                        <div className="space-y-2.5">
                           <button
                             type="button"
                             onClick={() => {
-                              clearStrokeRevealTimer();
-                              setIsStrokeHoldBeforeReveal(false);
-                              setStrokeRevealed(true);
+                              setSessionResults((prev) => [
+                                ...prev,
+                                {
+                                  question: currentQ,
+                                  userAnswer: 'Đã viết thành công',
+                                  isCorrect: true,
+                                  ratingLabel: 'Đã nhớ',
+                                },
+                              ]);
+                              saveAnswerSRS(2);
+                              handleNextQuestion();
                             }}
-                            className="text-cyan-300 hover:text-cyan-200 font-semibold cursor-pointer"
+                            className="w-full py-3 px-4 rounded-xl bg-gradient-to-r from-emerald-400 to-teal-400 hover:from-emerald-300 hover:to-teal-300 text-slate-950 font-bold text-sm shadow-lg shadow-emerald-500/25 flex items-center justify-center gap-2 cursor-pointer transition active:scale-[0.98]"
                           >
-                            Mở ngay →
+                            <span>Chuyển sang từ tiếp theo</span>
+                            <ArrowRight className="w-4 h-4 stroke-[2.5]" />
                           </button>
+
+                          <div className="space-y-1.5 bg-slate-900/60 border border-slate-800/80 rounded-2xl p-2.5">
+                            <p className="text-[10px] font-mono text-center text-slate-400 uppercase tracking-wider">
+                              Đánh giá mức độ ghi nhớ (SRS)
+                            </p>
+                            <div className="grid grid-cols-2 gap-1.5">
+                              <button
+                                type="button"
+                                onClick={() => handleFlashcardRating(0)}
+                                className="p-2 rounded-xl bg-slate-950/90 hover:bg-rose-500/10 border border-slate-800 hover:border-rose-500/40 text-center transition cursor-pointer active:scale-95 flex flex-col items-center gap-0.5"
+                              >
+                                <span className="font-bold text-xs text-rose-300">Chưa nhớ</span>
+                                <span className="text-[10px] text-slate-500">Ôn lại ngay</span>
+                              </button>
+                              <button
+                                type="button"
+                                onClick={() => handleFlashcardRating(1)}
+                                className="p-2 rounded-xl bg-slate-950/90 hover:bg-amber-500/10 border border-slate-800 hover:border-amber-500/40 text-center transition cursor-pointer active:scale-95 flex flex-col items-center gap-0.5"
+                              >
+                                <span className="font-bold text-xs text-amber-300">Hơi khó</span>
+                                <span className="text-[10px] text-slate-500">Sau 1 ngày</span>
+                              </button>
+                              <button
+                                type="button"
+                                onClick={() => handleFlashcardRating(2)}
+                                className="p-2 rounded-xl bg-slate-950/90 hover:bg-cyan-500/10 border border-slate-800 hover:border-cyan-500/40 text-center transition cursor-pointer active:scale-95 flex flex-col items-center gap-0.5"
+                              >
+                                <span className="font-bold text-xs text-cyan-300">Đã nhớ</span>
+                                <span className="text-[10px] text-slate-500">Sau 3 ngày</span>
+                              </button>
+                              <button
+                                type="button"
+                                onClick={() => handleFlashcardRating(3)}
+                                className="p-2 rounded-xl bg-slate-950/90 hover:bg-emerald-500/10 border border-slate-800 hover:border-emerald-500/40 text-center transition cursor-pointer active:scale-95 flex flex-col items-center gap-0.5"
+                              >
+                                <span className="font-bold text-xs text-emerald-300">Rất thuộc</span>
+                                <span className="text-[10px] text-slate-500">Sau 6 ngày</span>
+                              </button>
+                            </div>
+                          </div>
                         </div>
-                        <div className="w-full h-1.5 bg-slate-800 rounded-full overflow-hidden">
-                          <motion.div
-                            initial={{ scaleX: 0 }}
-                            animate={{ scaleX: 1 }}
-                            transition={{ duration: 1.5, ease: 'linear' }}
-                            style={{ transformOrigin: 'left' }}
-                            className="h-full bg-gradient-to-r from-emerald-400 to-cyan-400 rounded-full"
-                          />
-                        </div>
-                      </motion.div>
-                    ) : (
-                      <div className="flex items-center justify-center w-full pt-0.5">
-                        <button
-                          type="button"
-                          onClick={() => {
-                            clearStrokeRevealTimer();
-                            setIsStrokeHoldBeforeReveal(false);
-                            setSessionResults((prev) => [
-                              ...prev,
-                              {
-                                question: currentQ,
-                                userAnswer: 'Xem đáp án (Bỏ qua viết)',
-                                isCorrect: false,
-                                ratingLabel: 'Chưa nhớ',
-                              },
-                            ]);
-                            setStrokeRevealed(true);
-                            saveAnswerSRS(0);
-                          }}
-                          className="text-xs text-slate-400 hover:text-slate-200 underline underline-offset-4 cursor-pointer py-1 px-2 transition"
-                        >
-                          👁️ Xem đáp án & bỏ qua
-                        </button>
                       </div>
-                    )}
-                  </motion.div>
+                    </motion.div>,
+                    document.body
                   )
-                ) : (
-                  /* REVEALED CARD: Full Character Information + Next Button + SRS Ratings */
-                  <motion.div
-                    key={`stroke-back-${currentIndex}`}
-                    initial={{ opacity: 0, scale: 0.94, y: 24, filter: 'blur(4px)' }}
-                    animate={{ opacity: 1, scale: 1, y: 0, filter: 'blur(0px)' }}
-                    exit={{ opacity: 0, scale: 0.98, y: -12 }}
-                    transition={{ duration: 0.42, ease: [0.22, 1, 0.36, 1] }}
-                    className="space-y-4 text-center w-full max-w-lg mx-auto"
-                  >
+                )
+              ) : !strokeRevealed ? (
+                <motion.div
+                  key={`stroke-unified-front-${currentIndex}`}
+                  initial={{ opacity: 0, y: 12, scale: 0.98 }}
+                  animate={{ opacity: 1, y: 0, scale: 1 }}
+                  transition={{ duration: 0.25, ease: [0.22, 1, 0.36, 1] }}
+                  className="flex flex-col items-center relative text-center w-full mx-auto"
+                >
+                  {renderUnifiedStrokeWriter()}
+                </motion.div>
+              ) : (
+                /* REVEALED CARD (Desktop / Tablet / Portrait Fallback): Full Character Information + Next Button + SRS Ratings */
+                <motion.div
+                  key={`stroke-back-${currentIndex}`}
+                  initial={{ opacity: 0, scale: 0.94, y: 20 }}
+                  animate={{ opacity: 1, scale: 1, y: 0 }}
+                  transition={{ duration: 0.32, ease: [0.22, 1, 0.36, 1] }}
+                  className="space-y-4 text-center w-full max-w-lg mx-auto"
+                >
                   {/* Top Success Banner */}
                   <div className="flex items-center justify-between pb-2.5 border-b border-slate-800">
                     <div className="flex items-center gap-2">
@@ -1725,7 +1792,6 @@ export const StudySession: React.FC<StudySessionProps> = ({
                   </div>
                 </motion.div>
               )}
-              </AnimatePresence>
             </div>
           ) : currentQ.clozeSentence ? (
             /* Question Type: Điền khuyết vào câu */

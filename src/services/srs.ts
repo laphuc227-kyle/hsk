@@ -242,8 +242,14 @@ export function selectCharactersForSession(
   }
 
   if (pool.length === 0) {
-    // If specific list produced 0, fallback to allCharacters to avoid softlock
-    pool = [...allCharacters];
+    // Prefer saved compound words if user explicitly chose a compound filter
+    if (selectedListId && ['all_compound', 'compound_review', 'compound_expansion'].includes(selectedListId)) {
+      const savedCompounds = allCharacters.filter((c) => c.hanzi.length > 1);
+      pool = savedCompounds.length > 0 ? savedCompounds : [...allCharacters];
+    } else {
+      // If specific list produced 0, fallback to allCharacters to avoid softlock
+      pool = [...allCharacters];
+    }
   }
 
   if (pool.length === 0) {
@@ -283,14 +289,62 @@ export function selectCharactersForSession(
       // Support both single characters and compound words containing Chinese characters
       {
         const hanziWords = pool.filter((c) => /\p{Script=Han}/u.test(c.hanzi));
-        pool = hanziWords.length > 0 ? hanziWords : allCharacters.filter((c) => /\p{Script=Han}/u.test(c.hanzi));
-        pool.sort((a, b) => {
+        let strokePool =
+          hanziWords.length > 0 ? hanziWords : allCharacters.filter((c) => /\p{Script=Han}/u.test(c.hanzi));
+
+        const srsSort = (a: Character, b: Character) => {
           const isDueA = a.srs.nextReviewDate <= now ? 50 : 0;
           const isDueB = b.srs.nextReviewDate <= now ? 50 : 0;
           const scoreA = isDueA + (100 - a.srs.masteryLevel) + Math.random() * 20;
           const scoreB = isDueB + (100 - b.srs.masteryLevel) + Math.random() * 20;
           return scoreB - scoreA;
-        });
+        };
+
+        const countHanzi = (text: string) =>
+          (Array.from(text) as string[]).filter((ch) => /\p{Script=Han}/u.test(ch)).length;
+
+        const singles = strokePool.filter((c) => countHanzi(c.hanzi) === 1).sort(srsSort);
+        let compounds = strokePool.filter((c) => countHanzi(c.hanzi) > 1).sort(srsSort);
+
+        // If user chose 'Tất cả từ vựng' (or a list with no compounds yet) and saved/fullMatch compounds are sparse,
+        // enrich with detected compound words from those characters so compound writing appears reliably.
+        const isAllVocab = !selectedListId || selectedListId === 'all';
+        if (selectedListId !== 'all_single' && (compounds.length === 0 || (isAllVocab && compounds.length < Math.ceil(targetCount / 2)))) {
+          const existingCompoundSet = new Set(compounds.map((c) => c.hanzi));
+          const detectedFromPool = detectCompoundWordsFromCharacters(
+            strokePool.length > 0 ? strokePool : allCharacters
+          );
+          const extraCompounds = detectedFromPool
+            .filter(
+              (dc) =>
+                /\p{Script=Han}/u.test(dc.word) &&
+                countHanzi(dc.word) > 1 &&
+                !existingCompoundSet.has(dc.word)
+            )
+            .map((dc) => convertCompoundToCharacter(dc, selectedListId ? [selectedListId] : ['all']))
+            .sort(srsSort);
+          compounds = [...compounds, ...extraCompounds];
+        }
+
+        if (selectedListId === 'all_single') {
+          pool = singles;
+        } else if (
+          selectedListId &&
+          ['all_compound', 'compound_review', 'compound_expansion'].includes(selectedListId)
+        ) {
+          pool = compounds.length > 0 ? compounds : strokePool.sort(srsSort);
+        } else if (singles.length > 0 && compounds.length > 0) {
+          // Interleave compound words and single characters 1:1 so "Tất cả từ vựng" always mixes both
+          const mixed: Character[] = [];
+          const maxLen = Math.max(compounds.length, singles.length);
+          for (let i = 0; i < maxLen; i++) {
+            if (i < compounds.length) mixed.push(compounds[i]);
+            if (i < singles.length) mixed.push(singles[i]);
+          }
+          pool = mixed;
+        } else {
+          pool = (compounds.length > 0 ? compounds : singles).sort(srsSort);
+        }
       }
       break;
 

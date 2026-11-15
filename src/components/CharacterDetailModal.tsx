@@ -87,10 +87,34 @@ export const CharacterDetailModal: React.FC<CharacterDetailModalProps> = ({
   const [isRefreshingDetails, setIsRefreshingDetails] = useState(false);
   const [refreshSuccessMessage, setRefreshSuccessMessage] = useState('');
 
-  // Constituent single characters enrichment and saved state for compound words
+  // Enriched constituent characters state
   const [enrichedConstituents, setEnrichedConstituents] = useState<Record<string, ConstituentInfo>>({});
   const [enrichingConstituents, setEnrichingConstituents] = useState(false);
   const [savedConstituents, setSavedConstituents] = useState<Record<string, boolean>>({});
+
+  // Detect compact mobile landscape (phone rotated horizontally)
+  const [isCompactLandscape, setIsCompactLandscape] = useState<boolean>(() => {
+    if (typeof window === 'undefined') return false;
+    return Math.min(window.innerWidth, window.innerHeight) < 640 && window.innerWidth > window.innerHeight;
+  });
+
+  useEffect(() => {
+    const updateOrientation = () => {
+      setIsCompactLandscape(
+        Math.min(window.innerWidth, window.innerHeight) < 640 && window.innerWidth > window.innerHeight
+      );
+    };
+    const handleOrientation = () => {
+      updateOrientation();
+      setTimeout(updateOrientation, 120);
+    };
+    window.addEventListener('resize', updateOrientation);
+    window.addEventListener('orientationchange', handleOrientation);
+    return () => {
+      window.removeEventListener('resize', updateOrientation);
+      window.removeEventListener('orientationchange', handleOrientation);
+    };
+  }, []);
 
   // Sync state when active character changes
   useEffect(() => {
@@ -436,7 +460,9 @@ export const CharacterDetailModal: React.FC<CharacterDetailModalProps> = ({
       animate={{ opacity: 1 }}
       exit={{ opacity: 0 }}
       transition={{ duration: 0.2 }}
-      className="fixed inset-0 z-50 flex items-center justify-center p-2.5 sm:p-4 bg-black/75 backdrop-blur-md"
+      className={`fixed inset-0 z-50 flex items-center justify-center bg-black/75 backdrop-blur-md ${
+        isCompactLandscape ? 'p-0' : 'p-2.5 sm:p-4'
+      }`}
       onClick={onClose}
     >
       <motion.div
@@ -444,53 +470,110 @@ export const CharacterDetailModal: React.FC<CharacterDetailModalProps> = ({
         animate={{ opacity: 1, scale: 1, y: 0 }}
         exit={{ opacity: 0, scale: 0.94, y: 20 }}
         transition={{ duration: 0.3, ease: [0.22, 1, 0.36, 1] }}
-        className="bg-slate-900 w-full max-w-2xl max-h-[92vh] rounded-2xl shadow-2xl border border-slate-800 flex flex-col overflow-hidden text-slate-100"
+        className={`relative bg-slate-900 w-full flex flex-col overflow-hidden text-slate-100 ${
+          isCompactLandscape
+            ? 'h-full max-w-none max-h-none rounded-none border-0 shadow-none'
+            : 'max-w-2xl max-h-[92vh] rounded-2xl shadow-2xl border border-slate-800'
+        }`}
         onClick={(e) => e.stopPropagation()}
       >
-        {/* Modal Header */}
-        <div className="flex items-center justify-between px-4 sm:px-6 py-3 sm:py-4 border-b border-slate-800/80 bg-slate-950/60">
-          <div className="flex items-center gap-2">
-            {historyStack.length > 0 ? (
-              <button
-                type="button"
-                onClick={handleGoBack}
-                className="flex items-center gap-1.5 px-3 py-1.5 text-xs font-bold text-cyan-300 hover:text-cyan-100 bg-cyan-950/80 hover:bg-cyan-900 border border-cyan-500/50 rounded-xl transition cursor-pointer shadow-sm active:scale-95 group"
-                title={`Quay về chữ trước đó: ${historyStack[historyStack.length - 1].hanzi}`}
-              >
-                <ArrowLeft className="w-3.5 h-3.5 text-cyan-400 group-hover:-translate-x-0.5 transition-transform" />
-                <span>Quay về: <strong className="text-cyan-200">{historyStack[historyStack.length - 1].hanzi}</strong></span>
-              </button>
-            ) : (
-              <span className="text-xs font-mono px-2 py-0.5 rounded-md bg-emerald-500/20 text-emerald-300 border border-emerald-500/30">
-                Chữ Hán Chi Tiết
-              </span>
-            )}
-            <span className="text-xs text-slate-600">•</span>
-            <span className="text-xs text-slate-400 font-mono">
-              Độ thuộc: <span className="text-cyan-300 font-bold">{character.srs.masteryLevel}%</span>
-            </span>
-          </div>
-          <div className="flex items-center gap-2">
+        {/* Compact Landscape: Minimal floating corner controls so 100% of vertical screen height shows content */}
+        {isCompactLandscape ? (
+          <div className="pointer-events-none absolute top-2.5 right-3 left-3 z-20 flex items-center justify-between gap-2">
+            <div>
+              {historyStack.length > 0 && (
+                <button
+                  type="button"
+                  onClick={handleGoBack}
+                  className="pointer-events-auto flex items-center gap-1.5 px-2.5 py-1.5 text-xs font-bold text-cyan-200 bg-slate-950/85 hover:bg-cyan-950/90 backdrop-blur-md border border-cyan-500/40 rounded-xl shadow-lg transition cursor-pointer active:scale-95"
+                  title={`Quay về chữ trước đó: ${historyStack[historyStack.length - 1].hanzi}`}
+                >
+                  <ArrowLeft className="w-3.5 h-3.5 text-cyan-400" />
+                  <span>Quay về: {historyStack[historyStack.length - 1].hanzi}</span>
+                </button>
+              )}
+            </div>
             <button
-              onClick={handleRefreshDetails}
-              disabled={isRefreshingDetails}
-              className="px-2.5 py-1 text-xs font-medium text-cyan-300 bg-cyan-950/50 hover:bg-cyan-900/50 border border-cyan-800/60 rounded-xl transition flex items-center gap-1.5 cursor-pointer disabled:opacity-50"
-              title="Tra cứu & cập nhật thông tin chuẩn xác từ từ điển/AI"
-            >
-              <RefreshCw className={`w-3.5 h-3.5 ${isRefreshingDetails ? 'animate-spin text-cyan-400' : ''}`} />
-              <span className="hidden sm:inline">{isRefreshingDetails ? 'Đang tải...' : 'Làm mới chi tiết'}</span>
-            </button>
-            <button
+              type="button"
               onClick={onClose}
-              className="p-1.5 text-slate-400 hover:text-slate-200 hover:bg-slate-800 rounded-xl transition cursor-pointer"
+              aria-label="Đóng chi tiết"
+              className="pointer-events-auto p-2 text-slate-300 hover:text-white bg-slate-950/85 hover:bg-slate-800 backdrop-blur-md border border-slate-700/70 rounded-xl shadow-lg transition cursor-pointer active:scale-95"
             >
-              <X className="w-5 h-5" />
+              <X className="w-4 h-4" />
             </button>
           </div>
-        </div>
+        ) : (
+          /* Desktop / Portrait: Pinned Modal Header */
+          <div className="flex items-center justify-between px-4 sm:px-6 py-3 sm:py-4 border-b border-slate-800/80 bg-slate-950/60">
+            <div className="flex items-center gap-2">
+              {historyStack.length > 0 ? (
+                <button
+                  type="button"
+                  onClick={handleGoBack}
+                  className="flex items-center gap-1.5 px-3 py-1.5 text-xs font-bold text-cyan-300 hover:text-cyan-100 bg-cyan-950/80 hover:bg-cyan-900 border border-cyan-500/50 rounded-xl transition cursor-pointer shadow-sm active:scale-95 group"
+                  title={`Quay về chữ trước đó: ${historyStack[historyStack.length - 1].hanzi}`}
+                >
+                  <ArrowLeft className="w-3.5 h-3.5 text-cyan-400 group-hover:-translate-x-0.5 transition-transform" />
+                  <span>Quay về: <strong className="text-cyan-200">{historyStack[historyStack.length - 1].hanzi}</strong></span>
+                </button>
+              ) : (
+                <span className="text-xs font-mono px-2 py-0.5 rounded-md bg-emerald-500/20 text-emerald-300 border border-emerald-500/30">
+                  Chữ Hán Chi Tiết
+                </span>
+              )}
+              <span className="text-xs text-slate-600">•</span>
+              <span className="text-xs text-slate-400 font-mono">
+                Độ thuộc: <span className="text-cyan-300 font-bold">{character.srs.masteryLevel}%</span>
+              </span>
+            </div>
+            <div className="flex items-center gap-2">
+              <button
+                onClick={handleRefreshDetails}
+                disabled={isRefreshingDetails}
+                className="px-2.5 py-1 text-xs font-medium text-cyan-300 bg-cyan-950/50 hover:bg-cyan-900/50 border border-cyan-800/60 rounded-xl transition flex items-center gap-1.5 cursor-pointer disabled:opacity-50"
+                title="Tra cứu & cập nhật thông tin chuẩn xác từ từ điển/AI"
+              >
+                <RefreshCw className={`w-3.5 h-3.5 ${isRefreshingDetails ? 'animate-spin text-cyan-400' : ''}`} />
+                <span className="hidden sm:inline">{isRefreshingDetails ? 'Đang tải...' : 'Làm mới chi tiết'}</span>
+              </button>
+              <button
+                onClick={onClose}
+                className="p-1.5 text-slate-400 hover:text-slate-200 hover:bg-slate-800 rounded-xl transition cursor-pointer"
+              >
+                <X className="w-5 h-5" />
+              </button>
+            </div>
+          </div>
+        )}
 
         {/* Modal Scroll Body */}
-        <div className="flex-1 overflow-y-auto p-4 sm:p-6 space-y-5 sm:space-y-6">
+        <div
+          className={`flex-1 overflow-y-auto ${
+            isCompactLandscape ? 'px-4 py-3 space-y-3.5' : 'p-4 sm:p-6 space-y-5 sm:space-y-6'
+          }`}
+        >
+          {/* In compact landscape, place header metadata & refresh action inline at top of scroll flow so it scrolls away cleanly */}
+          {isCompactLandscape && (
+            <div className="flex items-center justify-between gap-3 pr-11 pb-2 border-b border-slate-800/70">
+              <div className="flex items-center gap-2 text-xs text-slate-400">
+                <span className="font-semibold text-emerald-300">Chữ Hán Chi Tiết</span>
+                <span aria-hidden="true">·</span>
+                <span className="font-mono tabular-nums">
+                  Độ thuộc: <strong className="text-cyan-300">{character.srs.masteryLevel}%</strong>
+                </span>
+              </div>
+              <button
+                type="button"
+                onClick={handleRefreshDetails}
+                disabled={isRefreshingDetails}
+                className="px-2.5 py-1 text-xs font-medium text-cyan-300 bg-cyan-950/50 hover:bg-cyan-900/50 border border-cyan-800/60 rounded-lg transition flex items-center gap-1.5 cursor-pointer disabled:opacity-50 shrink-0"
+                title="Tra cứu & cập nhật thông tin chuẩn xác từ từ điển/AI"
+              >
+                <RefreshCw className={`w-3 h-3 ${isRefreshingDetails ? 'animate-spin text-cyan-400' : ''}`} />
+                <span>{isRefreshingDetails ? 'Đang tải...' : 'Làm mới chi tiết'}</span>
+              </button>
+            </div>
+          )}
           {/* Breadcrumb banner if user navigated from another word (e.g. from a compound word) */}
           {historyStack.length > 0 && (
             <div className="flex items-center justify-between p-3 bg-gradient-to-r from-cyan-950/80 via-slate-900/90 to-cyan-950/80 border border-cyan-500/40 rounded-2xl shadow-inner gap-3">
@@ -555,38 +638,68 @@ export const CharacterDetailModal: React.FC<CharacterDetailModalProps> = ({
             </div>
           )}
           {/* Main Top Section: Hero Hanzi + Stroke Canvas */}
-          <div className="grid grid-cols-1 md:grid-cols-2 gap-6 items-center bg-slate-950/80 p-4 sm:p-5 rounded-2xl border border-slate-800/80 shadow-inner">
+          <div
+            className={`grid items-center bg-slate-950/80 rounded-2xl border border-slate-800/80 shadow-inner ${
+              isCompactLandscape
+                ? 'grid-cols-2 gap-4 p-3.5'
+                : 'grid-cols-1 md:grid-cols-2 gap-6 p-4 sm:p-5'
+            }`}
+          >
             {/* Left Column: Big Hanzi */}
-            <div className="flex flex-col items-center md:items-start text-center md:text-left space-y-2">
-              <div className="flex items-baseline gap-3">
-                <span className="text-5xl sm:text-6xl font-serif font-bold text-slate-100 tracking-tight">
+            <div
+              className={`flex flex-col ${
+                isCompactLandscape
+                  ? 'items-start text-left space-y-1.5'
+                  : 'items-center md:items-start text-center md:text-left space-y-2'
+              }`}
+            >
+              <div className="flex items-baseline gap-2.5">
+                <span
+                  className={`font-serif font-bold text-slate-100 tracking-tight ${
+                    isCompactLandscape ? 'text-4xl sm:text-5xl' : 'text-5xl sm:text-6xl'
+                  }`}
+                >
                   {character.hanzi}
                 </span>
                 <button
                   onClick={() => speakChinese(character.hanzi)}
-                  className="p-2 text-cyan-300 hover:bg-slate-800 rounded-full transition cursor-pointer"
+                  className="p-1.5 text-cyan-300 hover:bg-slate-800 rounded-full transition cursor-pointer"
                   title="Nghe phát âm"
                 >
-                  <Volume2 className="w-6 h-6" />
+                  <Volume2 className={isCompactLandscape ? 'w-5 h-5' : 'w-6 h-6'} />
                 </button>
               </div>
 
-              <div className="flex flex-wrap items-center justify-center md:justify-start gap-2 pt-1">
-                <span className="text-base sm:text-lg font-mono font-bold text-cyan-300 bg-cyan-950/60 px-2.5 py-0.5 rounded-lg border border-cyan-500/30">
+              <div
+                className={`flex flex-wrap items-center gap-2 ${
+                  isCompactLandscape ? 'justify-start pt-0.5' : 'justify-center md:justify-start pt-1'
+                }`}
+              >
+                <span
+                  className={`font-mono font-bold text-cyan-300 bg-cyan-950/60 px-2.5 py-0.5 rounded-lg border border-cyan-500/30 ${
+                    isCompactLandscape ? 'text-sm sm:text-base' : 'text-base sm:text-lg'
+                  }`}
+                >
                   {character.pinyin}
                 </span>
-                <span className="text-xs sm:text-sm font-bold text-teal-300 bg-teal-950/60 px-2 py-0.5 rounded-lg border border-teal-500/30 uppercase">
-                  {character.hanViet}
-                </span>
+                {character.hanViet && (
+                  <span className="text-xs font-bold text-teal-300 bg-teal-950/60 px-2 py-0.5 rounded-lg border border-teal-500/30 uppercase">
+                    {character.hanViet}
+                  </span>
+                )}
               </div>
 
-              <p className="text-sm sm:text-base text-slate-200 font-medium pt-2">
+              <p
+                className={`text-slate-200 font-medium ${
+                  isCompactLandscape ? 'text-sm pt-1 leading-snug' : 'text-sm sm:text-base pt-2'
+                }`}
+              >
                 {character.meaning}
               </p>
 
-              <div className="grid grid-cols-2 gap-2 text-xs text-slate-400 pt-2 w-full">
-                <div className="bg-slate-900 p-2.5 rounded-xl border border-slate-800 flex flex-col justify-between">
-                  <div className="flex items-center justify-between">
+              <div className={`grid grid-cols-2 gap-2 text-xs text-slate-400 w-full ${isCompactLandscape ? 'pt-1' : 'pt-2'}`}>
+                <div className={`bg-slate-900 rounded-xl border border-slate-800 flex flex-col justify-between ${isCompactLandscape ? 'p-2' : 'p-2.5'}`}>
+                  <div className="flex items-center justify-between gap-1">
                     <span className="text-slate-500 block text-[10px] uppercase font-mono">Bộ thủ</span>
                     {onOpenRadicalView && radicalInfo && (
                       <button
@@ -597,29 +710,29 @@ export const CharacterDetailModal: React.FC<CharacterDetailModalProps> = ({
                         }}
                         className="text-[10px] text-cyan-400 hover:text-cyan-300 font-semibold cursor-pointer underline"
                       >
-                        Sổ tay bộ →
+                        Sổ tay →
                       </button>
                     )}
                   </div>
-                  <span className="font-semibold text-slate-200">
+                  <span className="font-semibold text-slate-200 truncate">
                     {radicalInfo
                       ? `${radicalInfo.variants.length > 0 ? radicalInfo.variants[0] : radicalInfo.hanzi} ${radicalInfo.hanViet}`
                       : character.radical}
                   </span>
                 </div>
-                <div className="bg-slate-900 p-2.5 rounded-xl border border-slate-800">
+                <div className={`bg-slate-900 rounded-xl border border-slate-800 ${isCompactLandscape ? 'p-2' : 'p-2.5'}`}>
                   <span className="text-slate-500 block text-[10px] uppercase font-mono">Số nét</span>
-                  <span className="font-semibold text-slate-200">{character.strokeCount} nét</span>
+                  <span className="font-semibold text-slate-200 tabular-nums">{character.strokeCount} nét</span>
                 </div>
               </div>
             </div>
 
             {/* Right Column: Stroke Writing Canvas with touch isolation & compound support */}
-            <div className="flex flex-col items-center justify-center pt-2 md:pt-0 w-full">
+            <div className={`flex flex-col items-center justify-center w-full ${isCompactLandscape ? 'pt-0' : 'pt-2 md:pt-0'}`}>
               <StrokeWriterCanvas
                 hanzi={character.hanzi}
                 pinyin={character.pinyin}
-                size={230}
+                size={isCompactLandscape ? 175 : 230}
               />
             </div>
           </div>
@@ -697,7 +810,7 @@ export const CharacterDetailModal: React.FC<CharacterDetailModalProps> = ({
                 )}
               </div>
 
-              <div className="grid grid-cols-1 gap-2.5">
+              <div className={`grid gap-2.5 ${isCompactLandscape && character.hanzi.length >= 2 ? 'grid-cols-2' : 'grid-cols-1'}`}>
                 {character.hanzi.split('').map((ch: string, idx: number) => {
                   const info = resolveConstituentInfo(ch);
                   const isSaved = info.isSaved || savedConstituents[ch];
@@ -974,70 +1087,136 @@ export const CharacterDetailModal: React.FC<CharacterDetailModalProps> = ({
               </button>
             </div>
           </div>
-        </div>
+          {/* Compact Landscape: Action footer lives inside scroll flow so it never pins over content */}
+          {isCompactLandscape && (
+            <div className="pt-3 border-t border-slate-800/80 flex flex-wrap items-center justify-between gap-2 pb-1">
+              <div className="flex items-center gap-2">
+                {onOpenTutor && (
+                  <button
+                    onClick={() => {
+                      onClose();
+                      onOpenTutor(character.hanzi);
+                    }}
+                    className="flex items-center gap-1.5 text-xs font-bold text-cyan-300 bg-cyan-950/60 hover:bg-cyan-900/80 px-3 py-2 rounded-xl border border-cyan-500/40 transition cursor-pointer"
+                  >
+                    <Sparkles className="w-3.5 h-3.5 text-cyan-400" />
+                    <span>Hỏi Gia Sư AI về chữ này</span>
+                  </button>
+                )}
 
-        {/* Modal Footer Actions */}
-        <div className="p-4 border-t border-slate-800 bg-slate-950/60 flex flex-wrap items-center justify-between gap-2">
-          <div className="flex items-center gap-2">
-            {onOpenTutor && (
-              <button
-                onClick={() => {
-                  onClose();
-                  onOpenTutor(character.hanzi);
-                }}
-                className="flex items-center gap-1.5 text-xs font-bold text-cyan-300 bg-cyan-950/60 hover:bg-cyan-900/80 px-3 py-2 rounded-xl border border-cyan-500/40 transition cursor-pointer"
-              >
-                <Sparkles className="w-3.5 h-3.5 text-cyan-400" />
-                <span>Hỏi Gia Sư AI về chữ này</span>
-              </button>
-            )}
-
-            {!confirmingDelete ? (
-              <button
-                type="button"
-                onClick={() => setConfirmingDelete(true)}
-                className="flex items-center gap-1.5 text-xs font-semibold text-rose-400 hover:text-rose-300 bg-rose-950/40 hover:bg-rose-900/60 px-3 py-2 rounded-xl border border-rose-500/30 transition cursor-pointer"
-                title="Xóa chữ này"
-              >
-                <Trash2 className="w-3.5 h-3.5" />
-                <span>Xóa chữ</span>
-              </button>
-            ) : (
-              <div className="flex items-center gap-1.5 bg-rose-950/60 p-1 rounded-xl border border-rose-500/40">
-                <span className="text-[11px] font-bold text-rose-300 px-1.5">Xác nhận xóa?</span>
-                <button
-                  type="button"
-                  onClick={() => {
-                    if (onDeleteCharacter) {
-                      onDeleteCharacter(character.id);
-                    } else {
-                      removeCharacter(character.id);
-                      if (onUpdateCharacter) onUpdateCharacter();
-                    }
-                    onClose();
-                  }}
-                  className="px-2.5 py-1 text-xs font-bold text-white bg-rose-600 hover:bg-rose-500 rounded-lg transition cursor-pointer"
-                >
-                  Xóa ngay
-                </button>
-                <button
-                  type="button"
-                  onClick={() => setConfirmingDelete(false)}
-                  className="px-2 py-1 text-xs text-slate-400 hover:text-slate-200 transition cursor-pointer"
-                >
-                  Hủy
-                </button>
+                {!confirmingDelete ? (
+                  <button
+                    type="button"
+                    onClick={() => setConfirmingDelete(true)}
+                    className="flex items-center gap-1.5 text-xs font-semibold text-rose-400 hover:text-rose-300 bg-rose-950/40 hover:bg-rose-900/60 px-3 py-2 rounded-xl border border-rose-500/30 transition cursor-pointer"
+                    title="Xóa chữ này"
+                  >
+                    <Trash2 className="w-3.5 h-3.5" />
+                    <span>Xóa chữ</span>
+                  </button>
+                ) : (
+                  <div className="flex items-center gap-1.5 bg-rose-950/60 p-1 rounded-xl border border-rose-500/40">
+                    <span className="text-[11px] font-bold text-rose-300 px-1.5">Xác nhận xóa?</span>
+                    <button
+                      type="button"
+                      onClick={() => {
+                        if (onDeleteCharacter) {
+                          onDeleteCharacter(character.id);
+                        } else {
+                          removeCharacter(character.id);
+                          if (onUpdateCharacter) onUpdateCharacter();
+                        }
+                        onClose();
+                      }}
+                      className="px-2.5 py-1 text-xs font-bold text-white bg-rose-600 hover:bg-rose-500 rounded-lg transition cursor-pointer"
+                    >
+                      Xóa ngay
+                    </button>
+                    <button
+                      type="button"
+                      onClick={() => setConfirmingDelete(false)}
+                      className="px-2 py-1 text-xs text-slate-400 hover:text-slate-200 transition cursor-pointer"
+                    >
+                      Hủy
+                    </button>
+                  </div>
+                )}
               </div>
-            )}
-          </div>
 
-          <button
-            onClick={onClose}
-            className="px-4 py-2 text-xs font-medium text-slate-400 hover:text-slate-100 rounded-xl transition ml-auto cursor-pointer"
-          >
-            Đóng
-          </button>
+              <button
+                onClick={onClose}
+                className="px-4 py-2 text-xs font-medium text-slate-300 hover:text-white bg-slate-800/70 hover:bg-slate-800 rounded-xl transition ml-auto cursor-pointer"
+              >
+                Đóng
+              </button>
+            </div>
+          )}
         </div>
+
+        {/* Desktop / Portrait: Pinned Modal Footer Actions */}
+        {!isCompactLandscape && (
+          <div className="p-4 border-t border-slate-800 bg-slate-950/60 flex flex-wrap items-center justify-between gap-2">
+            <div className="flex items-center gap-2">
+              {onOpenTutor && (
+                <button
+                  onClick={() => {
+                    onClose();
+                    onOpenTutor(character.hanzi);
+                  }}
+                  className="flex items-center gap-1.5 text-xs font-bold text-cyan-300 bg-cyan-950/60 hover:bg-cyan-900/80 px-3 py-2 rounded-xl border border-cyan-500/40 transition cursor-pointer"
+                >
+                  <Sparkles className="w-3.5 h-3.5 text-cyan-400" />
+                  <span>Hỏi Gia Sư AI về chữ này</span>
+                </button>
+              )}
+
+              {!confirmingDelete ? (
+                <button
+                  type="button"
+                  onClick={() => setConfirmingDelete(true)}
+                  className="flex items-center gap-1.5 text-xs font-semibold text-rose-400 hover:text-rose-300 bg-rose-950/40 hover:bg-rose-900/60 px-3 py-2 rounded-xl border border-rose-500/30 transition cursor-pointer"
+                  title="Xóa chữ này"
+                >
+                  <Trash2 className="w-3.5 h-3.5" />
+                  <span>Xóa chữ</span>
+                </button>
+              ) : (
+                <div className="flex items-center gap-1.5 bg-rose-950/60 p-1 rounded-xl border border-rose-500/40">
+                  <span className="text-[11px] font-bold text-rose-300 px-1.5">Xác nhận xóa?</span>
+                  <button
+                    type="button"
+                    onClick={() => {
+                      if (onDeleteCharacter) {
+                        onDeleteCharacter(character.id);
+                      } else {
+                        removeCharacter(character.id);
+                        if (onUpdateCharacter) onUpdateCharacter();
+                      }
+                      onClose();
+                    }}
+                    className="px-2.5 py-1 text-xs font-bold text-white bg-rose-600 hover:bg-rose-500 rounded-lg transition cursor-pointer"
+                  >
+                    Xóa ngay
+                  </button>
+                  <button
+                    type="button"
+                    onClick={() => setConfirmingDelete(false)}
+                    className="px-2 py-1 text-xs text-slate-400 hover:text-slate-200 transition cursor-pointer"
+                  >
+                    Hủy
+                  </button>
+                </div>
+              )}
+            </div>
+
+            <button
+              onClick={onClose}
+              className="px-4 py-2 text-xs font-medium text-slate-400 hover:text-slate-100 rounded-xl transition ml-auto cursor-pointer"
+            >
+              Đóng
+            </button>
+          </div>
+        )}
       </motion.div>
     </motion.div>
   );

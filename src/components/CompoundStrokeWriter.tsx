@@ -40,6 +40,8 @@ interface CompoundStrokeWriterProps {
   onExit?: () => void;
   isHoldTransition?: boolean;
   onSkipHold?: () => void;
+  forcePortraitMode?: boolean;
+  onForcePortraitModeChange?: (val: boolean) => void;
 }
 
 interface HanziSlotHandle {
@@ -446,6 +448,8 @@ export const CompoundStrokeWriter: React.FC<CompoundStrokeWriterProps> = ({
   onExit,
   isHoldTransition = false,
   onSkipHold,
+  forcePortraitMode,
+  onForcePortraitModeChange,
 }) => {
   const hanziChars = useMemo(
     () => (Array.from(hanzi) as string[]).filter((ch) => /\p{Script=Han}/u.test(ch)),
@@ -469,7 +473,16 @@ export const CompoundStrokeWriter: React.FC<CompoundStrokeWriterProps> = ({
   const [showGuide, setShowGuide] = useState(false);
   const [alwaysShowOutline, setAlwaysShowOutline] = useState(false);
   const [isAnimating, setIsAnimating] = useState(false);
-  const [forcePortraitSingle, setForcePortraitSingle] = useState(false);
+  const [internalForcePortrait, setInternalForcePortrait] = useState(false);
+
+  const forcePortraitSingle = forcePortraitMode !== undefined ? forcePortraitMode : internalForcePortrait;
+  const setForcePortraitSingle = (val: boolean) => {
+    if (onForcePortraitModeChange) {
+      onForcePortraitModeChange(val);
+    } else {
+      setInternalForcePortrait(val);
+    }
+  };
 
   const alwaysShowOutlineRef = useRef(alwaysShowOutline);
   alwaysShowOutlineRef.current = alwaysShowOutline;
@@ -520,24 +533,35 @@ export const CompoundStrokeWriter: React.FC<CompoundStrokeWriterProps> = ({
   const isMobilePortrait = isSmallScreen && !isLandscape;
   const isMobileLandscape = isSmallScreen && isLandscape;
 
-  // Dynamic Rice Grid canvas sizing
+  // Dynamic Rice Grid canvas sizing (generous for both single and 2-box compound words)
   const boxSize = useMemo(() => {
+    const isSingle = hanziChars.length <= 1;
     const hasArrows = hanziChars.length >= 3;
     if (isMobileLandscape) {
-      // Maximize vertical height on mobile landscape (total vertical overhead ~86px, left dock ~62px)
-      const availH = viewport.height - 92;
-      const arrowsW = hasArrows ? 88 : 16;
-      const availW = (viewport.width - 64 - arrowsW - 24) / 2;
-      return Math.max(134, Math.min(234, Math.floor(Math.min(availH, availW))));
+      // Compact top + bottom strips (~66px total), left vertical dock (~64px)
+      const availH = viewport.height - 66;
+      if (isSingle) {
+        const availW = viewport.width - 64 - 24;
+        return Math.max(175, Math.min(320, Math.floor(Math.min(availH, availW))));
+      }
+      const arrowsW = hasArrows ? 82 : 8;
+      const availW = (viewport.width - 64 - arrowsW - 20) / 2;
+      return Math.max(155, Math.min(305, Math.floor(Math.min(availH, availW))));
     }
     if (isMobilePortrait) {
       // Single-box portrait fallback
-      return Math.max(185, Math.min(250, viewport.width - 124));
+      const arrowsW = hanziChars.length >= 2 ? 84 : 0;
+      const availH = viewport.height - 260;
+      const availW = viewport.width - 44 - arrowsW;
+      return Math.max(210, Math.min(315, Math.floor(Math.min(availH, availW))));
     }
-    // Desktop / Tablet: 2 boxes side by side comfortably
-    const arrowsW = hasArrows ? 104 : 24;
-    const availW = (Math.min(viewport.width - 120, 700) - arrowsW) / 2;
-    return Math.max(180, Math.min(236, Math.floor(availW)));
+    // Desktop / Tablet
+    if (isSingle) {
+      return Math.max(250, Math.min(315, viewport.width - 140));
+    }
+    const arrowsW = hasArrows ? 104 : 20;
+    const availW = (Math.min(viewport.width - 100, 800) - arrowsW) / 2;
+    return Math.max(210, Math.min(300, Math.floor(availW)));
   }, [isMobileLandscape, isMobilePortrait, viewport.width, viewport.height, hanziChars.length]);
 
   const completedCount = completedSlots.filter(Boolean).length;
@@ -778,47 +802,61 @@ export const CompoundStrokeWriter: React.FC<CompoundStrokeWriterProps> = ({
     }
 
     return (
-      <div className={`flex flex-col items-center ${compact ? 'gap-0.5' : 'gap-1.5 pt-0.5'}`}>
+      <div
+        className={`flex items-center justify-center ${
+          compact ? 'flex-row flex-wrap gap-x-3 gap-y-0.5' : 'flex-col gap-1.5 pt-0.5'
+        }`}
+      >
         {/* Character selection / progress strip */}
-        <div className="flex items-center justify-center gap-1.5 flex-wrap text-[11px] text-slate-300">
-          <span className="text-slate-400 font-medium">Đang viết:</span>
-          <div className="flex items-center gap-1">
-            {hanziChars.map((_, idx) => {
-              const done = completedSlots[idx];
-              const isFocused = idx === activeSlotIndex;
-              const isInWindow =
-                isMobilePortrait && forcePortraitSingle
-                  ? idx === activeSlotIndex
-                  : idx === windowStartIndex || idx === windowStartIndex + 1;
+        {hanziChars.length > 1 ? (
+          <div className="flex items-center justify-center gap-1.5 flex-wrap text-[11px] text-slate-300">
+            <span className="text-slate-400 font-medium">Đang viết:</span>
+            <div className="flex items-center gap-1">
+              {hanziChars.map((_, idx) => {
+                const done = completedSlots[idx];
+                const isFocused = idx === activeSlotIndex;
+                const isInWindow =
+                  isMobilePortrait && forcePortraitSingle
+                    ? idx === activeSlotIndex
+                    : idx === windowStartIndex || idx === windowStartIndex + 1;
 
-              return (
-                <button
-                  key={idx}
-                  type="button"
-                  onClick={() => handleSelectCharPill(idx)}
-                  className={`px-2 py-0.5 rounded-md font-mono text-[10px] font-bold transition cursor-pointer flex items-center gap-1 border ${
-                    done
-                      ? 'bg-emerald-500/20 text-emerald-300 border-emerald-500/50'
-                      : isFocused
-                      ? 'bg-cyan-500/20 text-cyan-300 border-cyan-400/70'
-                      : isInWindow
-                      ? 'bg-slate-800 text-slate-200 border-slate-700'
-                      : 'bg-slate-900 text-slate-500 border-slate-800 hover:text-slate-300'
-                  }`}
-                >
-                  <span>Chữ {idx + 1}</span>
-                  {done && <span className="text-emerald-400">✓</span>}
-                </button>
-              );
-            })}
+                return (
+                  <button
+                    key={idx}
+                    type="button"
+                    onClick={() => handleSelectCharPill(idx)}
+                    className={`px-2 py-0.5 rounded-md font-mono text-[10px] font-bold transition cursor-pointer flex items-center gap-1 border ${
+                      done
+                        ? 'bg-emerald-500/20 text-emerald-300 border-emerald-500/50'
+                        : isFocused
+                        ? 'bg-cyan-500/20 text-cyan-300 border-cyan-400/70'
+                        : isInWindow
+                        ? 'bg-slate-800 text-slate-200 border-slate-700'
+                        : 'bg-slate-900 text-slate-500 border-slate-800 hover:text-slate-300'
+                    }`}
+                  >
+                    <span>Chữ {idx + 1}</span>
+                    {done && <span className="text-emerald-400">✓</span>}
+                  </button>
+                );
+              })}
+            </div>
+            <span className="text-slate-500">•</span>
+            <span className="font-mono text-[10px] text-emerald-300 font-semibold">
+              {completedCount}/{hanziChars.length}
+            </span>
           </div>
-          <span className="text-slate-500">•</span>
-          <span className="font-mono text-[10px] text-emerald-300 font-semibold">
-            {completedCount}/{hanziChars.length}
-          </span>
-        </div>
+        ) : (
+          <div className="flex items-center justify-center gap-1.5 text-[11px] text-slate-400">
+            <span>Vẽ trực tiếp vào ô vuông</span>
+            <span>•</span>
+            <span className="font-mono text-[10px] text-emerald-300 font-semibold">
+              {completedCount}/1
+            </span>
+          </div>
+        )}
 
-        {/* Skip / Reveal button directly underneath "Đang viết" */}
+        {/* Skip / Reveal button directly underneath (or inline on ultra-compact landscape) */}
         <button
           type="button"
           onClick={onSkip}
@@ -850,15 +888,17 @@ export const CompoundStrokeWriter: React.FC<CompoundStrokeWriterProps> = ({
 
             <div className="space-y-1.5">
               <span className="inline-flex items-center gap-1.5 px-2.5 py-0.5 rounded-lg bg-amber-500/15 border border-amber-500/30 text-[11px] font-mono font-bold text-amber-300">
-                Từ ghép {hanziChars.length} chữ
+                {hanziChars.length === 1 ? 'Chữ đơn 1 chữ' : `Từ ghép ${hanziChars.length} chữ`}
               </span>
               <h3 className="text-base font-bold text-slate-100 leading-snug">
-                Xoay ngang điện thoại để viết 2 chữ cùng lúc
+                Xoay ngang điện thoại để luyện viết nét
               </h3>
               <p className="text-xs text-slate-400 leading-relaxed">
                 {hanziChars.length >= 3
-                  ? 'Xoay ngang giúp hiển thị 2 ô mễ điền rộng rãi song song và dùng nút mũi tên ➔ để trượt sang chữ thứ 3.'
-                  : 'Màn hình ngang giúp hiển thị cả 2 ô mễ điền rộng rãi để bạn tập viết liền mạch cả từ ghép.'}
+                  ? 'Xoay ngang cố định cho cả chữ đơn và từ ghép: hiển thị 2 ô rộng rãi song song và dùng nút ➔ để trượt sang chữ thứ 3.'
+                  : hanziChars.length === 2
+                  ? 'Xoay ngang cố định cho cả phiên học để hiển thị 2 ô mễ điền rộng rãi song song và thao tác thuận tiện hơn.'
+                  : 'Giao diện luyện viết được thiết kế đồng nhất theo màn hình ngang giúp ô viết lớn hơn và không cần xoay qua lại giữa chữ đơn và từ ghép.'}
               </p>
             </div>
           </div>
@@ -870,7 +910,7 @@ export const CompoundStrokeWriter: React.FC<CompoundStrokeWriterProps> = ({
               className="w-full py-2.5 px-4 rounded-xl bg-slate-900 hover:bg-slate-800 border border-slate-700 text-xs font-semibold text-slate-200 transition cursor-pointer active:scale-95 flex items-center justify-center gap-2"
             >
               <Edit3 className="w-3.5 h-3.5 text-cyan-400" />
-              <span>Vẫn viết từng chữ trên màn hình dọc</span>
+              <span>Vẫn viết trên màn hình dọc</span>
             </button>
 
             <button
@@ -892,22 +932,24 @@ export const CompoundStrokeWriter: React.FC<CompoundStrokeWriterProps> = ({
   if (isMobilePortrait && forcePortraitSingle) {
     const activeChar = hanziChars[activeSlotIndex] || hanziChars[0];
     return (
-      <div className="flex flex-col items-center w-full max-w-sm mx-auto space-y-2.5 select-none">
-        {/* Single Box + Left/Right Slide Arrows */}
+      <div className="flex flex-col items-center w-full max-w-md mx-auto space-y-2.5 select-none">
+        {/* Single Box + Left/Right Slide Arrows (arrows only for 2+ char words) */}
         <div className="flex items-center justify-center gap-2 w-full">
-          <button
-            type="button"
-            onClick={handleSlideLeft}
-            disabled={!canSlideLeft}
-            className={`p-2 rounded-xl border transition shrink-0 ${
-              canSlideLeft
-                ? 'bg-slate-900 hover:bg-slate-800 text-slate-200 border-slate-700 cursor-pointer active:scale-95'
-                : 'bg-slate-950/50 text-slate-700 border-slate-900 cursor-not-allowed'
-            }`}
-            title="Chữ trước"
-          >
-            <ArrowLeft className="w-4 h-4" />
-          </button>
+          {hanziChars.length >= 2 && (
+            <button
+              type="button"
+              onClick={handleSlideLeft}
+              disabled={!canSlideLeft}
+              className={`p-2 rounded-xl border transition shrink-0 ${
+                canSlideLeft
+                  ? 'bg-slate-900 hover:bg-slate-800 text-slate-200 border-slate-700 cursor-pointer active:scale-95'
+                  : 'bg-slate-950/50 text-slate-700 border-slate-900 cursor-not-allowed'
+              }`}
+              title="Chữ trước"
+            >
+              <ArrowLeft className="w-4 h-4" />
+            </button>
+          )}
 
           <AnimatePresence mode="wait">
             <motion.div
@@ -937,21 +979,23 @@ export const CompoundStrokeWriter: React.FC<CompoundStrokeWriterProps> = ({
             </motion.div>
           </AnimatePresence>
 
-          <button
-            type="button"
-            onClick={handleSlideRight}
-            disabled={!canSlideRight}
-            className={`p-2 rounded-xl border transition shrink-0 ${
-              shouldPulseRightArrow
-                ? 'bg-emerald-500/20 text-emerald-300 border-emerald-400 shadow-lg shadow-emerald-500/20 animate-pulse cursor-pointer active:scale-95'
-                : canSlideRight
-                ? 'bg-slate-900 hover:bg-slate-800 text-slate-200 border-slate-700 cursor-pointer active:scale-95'
-                : 'bg-slate-950/50 text-slate-700 border-slate-900 cursor-not-allowed'
-            }`}
-            title="Chữ tiếp theo"
-          >
-            <ArrowRight className="w-4 h-4" />
-          </button>
+          {hanziChars.length >= 2 && (
+            <button
+              type="button"
+              onClick={handleSlideRight}
+              disabled={!canSlideRight}
+              className={`p-2 rounded-xl border transition shrink-0 ${
+                shouldPulseRightArrow
+                  ? 'bg-emerald-500/20 text-emerald-300 border-emerald-400 shadow-lg shadow-emerald-500/20 animate-pulse cursor-pointer active:scale-95'
+                  : canSlideRight
+                  ? 'bg-slate-900 hover:bg-slate-800 text-slate-200 border-slate-700 cursor-pointer active:scale-95'
+                  : 'bg-slate-950/50 text-slate-700 border-slate-900 cursor-not-allowed'
+              }`}
+              title="Chữ tiếp theo"
+            >
+              <ArrowRight className="w-4 h-4" />
+            </button>
+          )}
         </div>
 
         {/* Indicator + Skip */}
@@ -963,7 +1007,7 @@ export const CompoundStrokeWriter: React.FC<CompoundStrokeWriterProps> = ({
           className="text-[11px] text-cyan-400/90 hover:text-cyan-300 flex items-center gap-1 cursor-pointer"
         >
           <RotateCw className="w-3 h-3" />
-          <span>Hướng dẫn xoay ngang viết 2 chữ</span>
+          <span>Chuyển về giao diện xoay ngang</span>
         </button>
 
         {/* Mobile Bottom 5-button Portal Dock */}
@@ -1046,7 +1090,7 @@ export const CompoundStrokeWriter: React.FC<CompoundStrokeWriterProps> = ({
   // =========================================================================
   if (isMobileLandscape && typeof document !== 'undefined') {
     return createPortal(
-      <div className="fixed inset-0 z-50 bg-[#090D16] text-slate-100 flex items-stretch overflow-hidden select-none">
+      <div className="fixed inset-0 z-40 bg-[#090D16] text-slate-100 flex items-stretch overflow-hidden select-none">
         {/* Left Vertical 5-Button Tool Dock */}
         <aside className="w-[64px] shrink-0 bg-slate-900/95 border-r border-slate-800/90 flex flex-col justify-evenly py-1 px-1 pl-[max(0.25rem,env(safe-area-inset-left))] shadow-2xl">
           <button
@@ -1129,7 +1173,9 @@ export const CompoundStrokeWriter: React.FC<CompoundStrokeWriterProps> = ({
                   Câu {currentQuestionNum}/{totalQuestions}
                 </span>
               ) : null}
-              <span className="text-slate-500">Từ ghép {hanziChars.length} chữ</span>
+              <span className="text-slate-500">
+                {hanziChars.length === 1 ? 'Chữ đơn' : `Từ ghép ${hanziChars.length} chữ`}
+              </span>
             </div>
 
             {onExit && (

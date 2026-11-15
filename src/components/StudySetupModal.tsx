@@ -1,4 +1,4 @@
-import React, { useState } from 'react';
+import React, { useState, useEffect } from 'react';
 import { motion } from 'motion/react';
 import {
   X,
@@ -13,6 +13,7 @@ import {
   FolderHeart,
   FileQuestion,
   PenTool,
+  Combine,
 } from 'lucide-react';
 import { WordList, StudySessionMode, Character } from '../types';
 import { detectCompoundWordsFromCharacters } from '../services/compoundWordDetector';
@@ -36,11 +37,17 @@ export const StudySetupModal: React.FC<StudySetupModalProps> = ({
   onClose,
   onConfirmStart,
 }) => {
-  // State for chosen source: 'all' | 'all_single' | 'compound_review' | 'compound_expansion' | custom list ID
+  // State for chosen source: 'all' | 'all_single' | 'all_compound' | 'compound_review' | 'compound_expansion' | custom list ID
   const [selectedSource, setSelectedSource] = useState<string>(initialListId || 'all');
 
   // Question limit
   const [questionLimit, setQuestionLimit] = useState<number | 'all'>(20);
+
+  useEffect(() => {
+    if (isOpen) {
+      setSelectedSource(initialListId || 'all');
+    }
+  }, [initialListId, isOpen]);
 
   if (!isOpen) return null;
 
@@ -52,10 +59,14 @@ export const StudySetupModal: React.FC<StudySetupModalProps> = ({
   const fullMatchCompounds = detectedCompounds.filter((d) => d.isFullMatch);
   const expansionCompounds = detectedCompounds.filter((d) => d.isExpansionMatch);
 
-  // Accurately compute count for "Tất cả từ vựng"
+  // Accurately compute count for "Tất cả từ vựng" and "Tất cả từ ghép"
   const existingHanziSet = new Set(allCharacters.map((c) => c.hanzi));
   const newFullMatchCount = fullMatchCompounds.filter((d) => !existingHanziSet.has(d.word)).length;
   const totalAllVocabularyCount = allCharacters.length + newFullMatchCount;
+  const allCompoundCount = new Set([
+    ...allCharacters.filter((c) => c.hanzi.length > 1).map((c) => c.hanzi),
+    ...detectedCompounds.map((d) => d.word),
+  ]).size;
 
   const customLists = wordLists.filter((l) => !['hsk1', 'hsk2', 'hsk3'].includes(l.id) && !l.isPredefined);
 
@@ -262,6 +273,30 @@ export const StudySetupModal: React.FC<StudySetupModalProps> = ({
                 </div>
                 <span className="text-[10px] font-mono font-bold px-2 py-0.5 rounded-full bg-purple-500/20 text-purple-300 border border-purple-500/30">
                   {expansionCompounds.length}
+                </span>
+              </button>
+
+              {/* Option 5: Tất cả từ ghép */}
+              <button
+                type="button"
+                onClick={() => setSelectedSource('all_compound')}
+                className={`p-3.5 rounded-2xl border text-left transition cursor-pointer flex items-center justify-between sm:col-span-2 ${
+                  selectedSource === 'all_compound'
+                    ? 'bg-amber-500/15 border-amber-500/50 text-amber-300 shadow-sm shadow-amber-500/10'
+                    : 'bg-slate-950/60 border-slate-800 text-slate-300 hover:border-slate-700 hover:text-slate-100'
+                }`}
+              >
+                <div className="flex items-center gap-3">
+                  <Combine className="w-4 h-4 text-amber-400 shrink-0" />
+                  <div>
+                    <div className="text-xs font-bold">Tất cả từ ghép (Ôn tập & Mở rộng)</div>
+                    <div className="text-[10px] text-slate-400">
+                      Chỉ luyện tập các từ ghép từ 2 chữ Hán trở lên
+                    </div>
+                  </div>
+                </div>
+                <span className="text-[10px] font-mono font-bold px-2 py-0.5 rounded-full bg-amber-500/20 text-amber-300 border border-amber-500/30">
+                  {allCompoundCount}
                 </span>
               </button>
 

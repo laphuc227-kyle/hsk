@@ -862,6 +862,14 @@ export const WordListManager: React.FC<WordListManagerProps> = ({
                 </button>
                 <button
                   type="button"
+                  onClick={() => onStartSession('stroke_writing', 'compound_review')}
+                  className="px-3.5 py-2 text-xs font-bold text-white bg-gradient-to-r from-rose-500 to-pink-500 hover:from-rose-400 hover:to-pink-400 active:scale-95 rounded-xl transition flex items-center gap-1.5 cursor-pointer shadow-md shadow-rose-500/20"
+                >
+                  <PenTool className="w-4 h-4 stroke-[2.5]" />
+                  <span>Luyện viết nét</span>
+                </button>
+                <button
+                  type="button"
                   onClick={() => onStartSession('quick_flashcard', 'compound_review')}
                   className="px-3.5 py-2 text-xs font-bold text-slate-950 bg-gradient-to-r from-cyan-400 to-sky-300 hover:from-cyan-300 hover:to-sky-200 active:scale-95 rounded-xl transition flex items-center gap-1.5 cursor-pointer shadow-md shadow-cyan-500/20"
                 >
@@ -889,6 +897,14 @@ export const WordListManager: React.FC<WordListManagerProps> = ({
                 </button>
                 <button
                   type="button"
+                  onClick={() => onStartSession('stroke_writing', 'compound_expansion')}
+                  className="px-3.5 py-2 text-xs font-bold text-white bg-gradient-to-r from-rose-500 to-pink-500 hover:from-rose-400 hover:to-pink-400 active:scale-95 rounded-xl transition flex items-center gap-1.5 cursor-pointer shadow-md shadow-rose-500/20"
+                >
+                  <PenTool className="w-4 h-4 stroke-[2.5]" />
+                  <span>Luyện viết nét</span>
+                </button>
+                <button
+                  type="button"
                   onClick={() => onStartSession('quick_flashcard', 'compound_expansion')}
                   className="px-3.5 py-2 text-xs font-bold text-slate-950 bg-gradient-to-r from-cyan-400 to-sky-300 hover:from-cyan-300 hover:to-sky-200 active:scale-95 rounded-xl transition flex items-center gap-1.5 cursor-pointer shadow-md shadow-cyan-500/20"
                 >
@@ -898,6 +914,23 @@ export const WordListManager: React.FC<WordListManagerProps> = ({
               </>
             ) : selectedListId === 'all_compound' ? (
               <>
+                <button
+                  type="button"
+                  onClick={() =>
+                    onStartSession(
+                      'stroke_writing',
+                      compoundSubFilter === 'compound_review'
+                        ? 'compound_review'
+                        : compoundSubFilter === 'compound_expansion'
+                        ? 'compound_expansion'
+                        : 'all_compound'
+                    )
+                  }
+                  className="px-3.5 py-2 text-xs font-bold text-white bg-gradient-to-r from-rose-500 to-pink-500 hover:from-rose-400 hover:to-pink-400 active:scale-95 rounded-xl transition flex items-center gap-1.5 cursor-pointer shadow-md shadow-rose-500/20"
+                >
+                  <PenTool className="w-4 h-4 stroke-[2.5]" />
+                  <span>Luyện viết nét từ ghép</span>
+                </button>
                 {compoundSubFilter !== 'compound_expansion' && fullMatchCompounds.length > 0 && (
                   <button
                     type="button"
