@@ -3,7 +3,7 @@
  * SPDX-License-Identifier: Apache-2.0
  */
 
-import React, { useState, useEffect } from 'react';
+import React, { useState, useEffect, useRef } from 'react';
 import { motion, AnimatePresence } from 'motion/react';
 import { Sidebar } from './components/Sidebar';
 import { WordListManager } from './components/WordListManager';
@@ -39,19 +39,26 @@ import {
   removeCharacter,
   getSavedStudySessions,
   removeSavedStudySession,
+  replaceSavedStudySessions,
 } from './services/storage';
 import { autoCategorizeCharacters } from './services/hskClassifier';
 import { syncLearnedCompoundWords } from './services/compoundWordDetector';
 import {
+  testFirestoreConnection,
   signInWithGoogle,
   signOutUser,
   subscribeToAuth,
   loadCharactersFromCloud,
+  saveCharacterToCloud,
   saveCharactersBatchToCloud,
   loadWordListsFromCloud,
   saveWordListsToCloud,
   loadUserStatsFromCloud,
   saveUserStatsToCloud,
+  loadSavedSessionsFromCloud,
+  saveSavedSessionToCloud,
+  deleteSavedSessionFromCloud,
+  saveSavedSessionsBatchToCloud,
 } from './services/firebase';
 
 export default function App() {
@@ -103,6 +110,15 @@ export default function App() {
   const [resumedStudySession, setResumedStudySession] = useState<SavedStudySession | null>(null);
   const [sessionInstanceKey, setSessionInstanceKey] = useState<number>(0);
 
+  const currentUserRef = useRef<User | null>(null);
+  currentUserRef.current = currentUser;
+  const activeViewRef = useRef(activeView);
+  activeViewRef.current = activeView;
+  const lastAutoSyncAtRef = useRef<number>(0);
+  const cloudSessionTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
+  const pendingCloudSessionRef = useRef<SavedStudySession | null>(null);
+  const cloudStatsTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
+
   const refreshSavedSessions = () => {
     setSavedSessions(getSavedStudySessions());
   };
@@ -120,20 +136,70 @@ export default function App() {
     setStats(getUserStats());
     setSavedSessions(getSavedStudySessions());
 
+    // Verify Firestore connection non-blocking
+    testFirestoreConnection();
+
     // Subscribe to Firebase Auth
     const unsubscribe = subscribeToAuth((user) => {
       setCurrentUser(user);
+      currentUserRef.current = user;
       if (user) {
         syncCloudData(user.uid);
       }
     });
 
-    return () => unsubscribe();
+    const handleVisibilityRefresh = () => {
+      if (
+        document.visibilityState === 'visible' &&
+        currentUserRef.current &&
+        activeViewRef.current !== 'study' &&
+        Date.now() - lastAutoSyncAtRef.current > 30000
+      ) {
+        syncCloudData(currentUserRef.current.uid, true);
+      }
+    };
+    document.addEventListener('visibilitychange', handleVisibilityRefresh);
+
+    return () => {
+      unsubscribe();
+      document.removeEventListener('visibilitychange', handleVisibilityRefresh);
+      if (cloudSessionTimerRef.current) clearTimeout(cloudSessionTimerRef.current);
+      if (cloudStatsTimerRef.current) clearTimeout(cloudStatsTimerRef.current);
+    };
   }, []);
 
-  const syncCloudData = async (userId: string) => {
+  const pickFresherCharacter = (cloudChar: Character, localChar: Character) => {
+    const cloudReviews = (cloudChar.srs?.totalCorrect || 0) + (cloudChar.srs?.totalIncorrect || 0);
+    const localReviews = (localChar.srs?.totalCorrect || 0) + (localChar.srs?.totalIncorrect || 0);
+    const cloudTime = cloudChar.srs?.lastReviewedAt || cloudChar.updatedAt || 0;
+    const localTime = localChar.srs?.lastReviewedAt || localChar.updatedAt || 0;
+
+    const mergedListIds = Array.from(
+      new Set([...(cloudChar.listIds || []), ...(localChar.listIds || [])])
+    );
+
+    const localIsAhead =
+      localReviews > cloudReviews || (localReviews === cloudReviews && localTime > cloudTime);
+
+    const base = localIsAhead ? localChar : cloudChar;
+    const listUpdated = mergedListIds.length > (cloudChar.listIds?.length || 0);
+
+    return {
+      winner: {
+        ...base,
+        id: cloudChar.id || localChar.id,
+        listIds: mergedListIds,
+      },
+      shouldUpload: localIsAhead || listUpdated,
+    };
+  };
+
+  const syncCloudData = async (userId: string, silent: boolean = false) => {
+    lastAutoSyncAtRef.current = Date.now();
     setIsSyncing(true);
-    setSyncToast({ message: 'Đang kết nối và đồng bộ dữ liệu đám mây...', type: 'info' });
+    if (!silent) {
+      setSyncToast({ message: 'Đang kết nối và đồng bộ dữ liệu đám mây...', type: 'info' });
+    }
 
     try {
       const [cloudChars, cloudLists, cloudStats] = await Promise.all([
@@ -145,72 +211,167 @@ export default function App() {
       const localChars = getCharacters();
       const localLists = getWordLists();
       const localStats = getUserStats();
+      const localSessions = getSavedStudySessions();
 
-      // Case 1: Cloud is completely empty but local has data -> Upload local to cloud
-      if (cloudChars.length === 0 && localChars.length > 0) {
-        await Promise.all([
-          saveCharactersBatchToCloud(userId, localChars),
-          saveWordListsToCloud(userId, localLists),
-          saveUserStatsToCloud(userId, localStats),
-        ]);
-        setSyncToast({
-          message: `Đã sao lưu ${localChars.length} từ vựng lên đám mây thành công!`,
-          type: 'success',
+      // Case 1: Cloud is completely empty -> Upload all local progress (vocab, lists, stats, saved sessions)
+      if (cloudChars.length === 0) {
+        const cloudSessions = await loadSavedSessionsFromCloud(userId, localChars);
+        const sessionMap = new Map<string, SavedStudySession>();
+        cloudSessions.forEach((s) => sessionMap.set(s.id, s));
+        localSessions.forEach((ls) => {
+          const existing = sessionMap.get(ls.id);
+          if (!existing || (ls.updatedAt || 0) > (existing.updatedAt || 0)) {
+            sessionMap.set(ls.id, ls);
+          }
         });
-      }
-      // Case 2: Cloud has data -> Merge cloud and local seamlessly
-      else if (cloudChars.length > 0) {
-        const charMap = new Map<string, Character>();
-        cloudChars.forEach((c) => charMap.set(c.hanzi, c));
+        const mergedSessions = replaceSavedStudySessions(Array.from(sessionMap.values()));
+        setSavedSessions(mergedSessions);
 
-        const newLocalToUpload: Character[] = [];
+        await Promise.all([
+          localChars.length > 0 ? saveCharactersBatchToCloud(userId, localChars) : Promise.resolve(),
+          localLists.length > 0 ? saveWordListsToCloud(userId, localLists) : Promise.resolve(),
+          saveUserStatsToCloud(userId, localStats),
+          mergedSessions.length > 0
+            ? saveSavedSessionsBatchToCloud(userId, mergedSessions)
+            : Promise.resolve(),
+        ]);
+
+        if (!silent) {
+          setSyncToast({
+            message: `Đã sao lưu ${localChars.length} từ vựng & tiến độ lên tài khoản Google!`,
+            type: 'success',
+          });
+        }
+      }
+      // Case 2: Cloud has data -> Smart two-way merge (newest SRS, stats, and unfinished sessions win)
+      else {
+        const cloudByHanzi = new Map<string, Character>();
+        cloudChars.forEach((c) => cloudByHanzi.set(c.hanzi, c));
+
+        const mergedByHanzi = new Map<string, Character>(cloudByHanzi);
+        const toUploadChars: Character[] = [];
+
         localChars.forEach((lc) => {
-          if (!charMap.has(lc.hanzi)) {
-            charMap.set(lc.hanzi, lc);
-            newLocalToUpload.push(lc);
+          const existingCloud = cloudByHanzi.get(lc.hanzi);
+          if (!existingCloud) {
+            mergedByHanzi.set(lc.hanzi, lc);
+            toUploadChars.push(lc);
+          } else {
+            const { winner, shouldUpload } = pickFresherCharacter(existingCloud, lc);
+            mergedByHanzi.set(lc.hanzi, winner);
+            if (shouldUpload) {
+              toUploadChars.push(winner);
+            }
           }
         });
 
-        const mergedChars = autoCategorizeCharacters(Array.from(charMap.values()));
+        const mergedChars = autoCategorizeCharacters(Array.from(mergedByHanzi.values()));
         saveCharacters(mergedChars);
         setCharacters(mergedChars);
-
-        // Upload any extra local items up to cloud
-        if (newLocalToUpload.length > 0) {
-          await saveCharactersBatchToCloud(userId, newLocalToUpload);
-        }
 
         // Merge Word Lists
         const listMap = new Map<string, WordList>();
         cloudLists.forEach((l) => listMap.set(l.id, l));
+        const toUploadLists: WordList[] = [];
         localLists.forEach((ll) => {
-          if (!listMap.has(ll.id)) listMap.set(ll.id, ll);
+          if (!listMap.has(ll.id)) {
+            listMap.set(ll.id, ll);
+            toUploadLists.push(ll);
+          }
         });
         const mergedLists = Array.from(listMap.values());
         saveWordLists(mergedLists);
         setWordLists(mergedLists);
 
-        if (cloudStats) {
-          saveUserStats(cloudStats);
-          setStats(cloudStats);
-        }
+        // Merge UserStats (keep higher review counts & study time)
+        const cloudReviews = cloudStats?.totalReviews || 0;
+        const localReviews = localStats.totalReviews || 0;
+        const mergedStats: UserStats = {
+          totalSaved: mergedChars.length,
+          totalMastered: mergedChars.filter((c) => c.srs.masteryLevel >= 80).length,
+          totalReviews: Math.max(cloudReviews, localReviews),
+          accuracy:
+            cloudReviews >= localReviews
+              ? (cloudStats?.accuracy ?? localStats.accuracy)
+              : localStats.accuracy,
+          streakDays:
+            cloudReviews >= localReviews
+              ? (cloudStats?.streakDays ?? localStats.streakDays)
+              : localStats.streakDays,
+          lastStudyDate:
+            (cloudStats?.lastStudyDate || '') >= (localStats.lastStudyDate || '')
+              ? (cloudStats?.lastStudyDate || localStats.lastStudyDate)
+              : localStats.lastStudyDate,
+          totalStudyTimeSeconds: Math.max(
+            cloudStats?.totalStudyTimeSeconds || 0,
+            localStats.totalStudyTimeSeconds || 0
+          ),
+        };
+        saveUserStats(mergedStats);
+        setStats(mergedStats);
 
-        setSyncToast({
-          message: `Đồng bộ hoàn tất! (${mergedChars.length} từ vựng đã sẵn sàng)`,
-          type: 'success',
+        // Load & merge in-progress SavedStudySessions using mergedChars
+        const cloudSessions = await loadSavedSessionsFromCloud(userId, mergedChars);
+        const sessionMap = new Map<string, SavedStudySession>();
+        cloudSessions.forEach((cs) => sessionMap.set(cs.id, cs));
+
+        const sessionsToUpload: SavedStudySession[] = [];
+        localSessions.forEach((ls) => {
+          const existingCloud = sessionMap.get(ls.id);
+          if (!existingCloud) {
+            sessionMap.set(ls.id, ls);
+            sessionsToUpload.push(ls);
+          } else {
+            const localNewer =
+              (ls.updatedAt || 0) > (existingCloud.updatedAt || 0) ||
+              ((ls.updatedAt || 0) === (existingCloud.updatedAt || 0) &&
+                ls.currentIndex > existingCloud.currentIndex);
+            if (localNewer) {
+              sessionMap.set(ls.id, ls);
+              sessionsToUpload.push(ls);
+            }
+          }
         });
-      } else {
-        setSyncToast({ message: 'Đã kết nối đám mây!', type: 'success' });
+
+        const mergedSessions = replaceSavedStudySessions(Array.from(sessionMap.values()));
+        setSavedSessions(mergedSessions);
+
+        // Push any local-newer updates back up to Cloud
+        await Promise.all([
+          toUploadChars.length > 0 ? saveCharactersBatchToCloud(userId, toUploadChars) : Promise.resolve(),
+          toUploadLists.length > 0 ? saveWordListsToCloud(userId, toUploadLists) : Promise.resolve(),
+          !cloudStats || localReviews > cloudReviews
+            ? saveUserStatsToCloud(userId, mergedStats)
+            : Promise.resolve(),
+          sessionsToUpload.length > 0
+            ? saveSavedSessionsBatchToCloud(userId, sessionsToUpload)
+            : Promise.resolve(),
+        ]);
+
+        if (!silent) {
+          const draftNote =
+            mergedSessions.length > 0
+              ? ` • ${mergedSessions.length} bài đang làm dở`
+              : '';
+          setSyncToast({
+            message: `Đồng bộ hoàn tất! (${mergedChars.length} từ vựng${draftNote})`,
+            type: 'success',
+          });
+        }
       }
     } catch (err: any) {
       console.error('Cloud Sync failed:', err);
-      setSyncToast({
-        message: 'Đồng bộ đám mây thất bại. Vui lòng kiểm tra lại mạng!',
-        type: 'error',
-      });
+      if (!silent) {
+        setSyncToast({
+          message: 'Đồng bộ đám mây thất bại. Vui lòng kiểm tra lại mạng!',
+          type: 'error',
+        });
+      }
     } finally {
       setIsSyncing(false);
-      setTimeout(() => setSyncToast(null), 4000);
+      if (!silent) {
+        setTimeout(() => setSyncToast(null), 4000);
+      }
     }
   };
 
@@ -304,14 +465,79 @@ export default function App() {
     setCharacters(categorized);
     const lists = getWordLists();
     setWordLists(lists);
-    setStats(getUserStats());
-    setSavedSessions(getSavedStudySessions());
+    const latestStats = getUserStats();
+    setStats(latestStats);
+    const latestSessions = getSavedStudySessions();
+    setSavedSessions(latestSessions);
 
     // If logged in, automatically push updates to Cloud
-    if (currentUser) {
-      saveCharactersBatchToCloud(currentUser.uid, categorized).catch(console.warn);
-      saveWordListsToCloud(currentUser.uid, lists).catch(console.warn);
+    const uid = currentUserRef.current?.uid;
+    if (uid) {
+      saveCharactersBatchToCloud(uid, categorized).catch(console.warn);
+      saveWordListsToCloud(uid, lists).catch(console.warn);
+      saveUserStatsToCloud(uid, latestStats).catch(console.warn);
+      if (latestSessions.length > 0) {
+        saveSavedSessionsBatchToCloud(uid, latestSessions).catch(console.warn);
+      }
     }
+  };
+
+  // Real-time / debounced Cloud sync handlers during study sessions
+  const handleCharacterReviewedCloud = (updatedChar: Character) => {
+    const uid = currentUserRef.current?.uid;
+    if (!uid) return;
+    saveCharacterToCloud(uid, updatedChar).catch(console.warn);
+
+    if (cloudStatsTimerRef.current) clearTimeout(cloudStatsTimerRef.current);
+    cloudStatsTimerRef.current = setTimeout(() => {
+      const latestUid = currentUserRef.current?.uid;
+      if (latestUid) {
+        saveUserStatsToCloud(latestUid, getUserStats()).catch(console.warn);
+      }
+    }, 1500);
+  };
+
+  const handleSavedSessionUpsertedCloud = (session: SavedStudySession, immediate: boolean = false) => {
+    const uid = currentUserRef.current?.uid;
+    if (!uid) return;
+    pendingCloudSessionRef.current = session;
+
+    if (immediate) {
+      if (cloudSessionTimerRef.current) {
+        clearTimeout(cloudSessionTimerRef.current);
+        cloudSessionTimerRef.current = null;
+      }
+      const toSave = pendingCloudSessionRef.current;
+      pendingCloudSessionRef.current = null;
+      if (toSave) {
+        saveSavedSessionToCloud(uid, toSave).catch(console.warn);
+      }
+      saveUserStatsToCloud(uid, getUserStats()).catch(console.warn);
+      return;
+    }
+
+    if (cloudSessionTimerRef.current) clearTimeout(cloudSessionTimerRef.current);
+    cloudSessionTimerRef.current = setTimeout(() => {
+      const latestUid = currentUserRef.current?.uid;
+      const toSave = pendingCloudSessionRef.current;
+      pendingCloudSessionRef.current = null;
+      if (latestUid && toSave) {
+        saveSavedSessionToCloud(latestUid, toSave).catch(console.warn);
+      }
+    }, 1200);
+  };
+
+  const handleSavedSessionDeletedCloud = (sessionId: string) => {
+    if (pendingCloudSessionRef.current?.id === sessionId) {
+      pendingCloudSessionRef.current = null;
+    }
+    if (cloudSessionTimerRef.current) {
+      clearTimeout(cloudSessionTimerRef.current);
+      cloudSessionTimerRef.current = null;
+    }
+    const uid = currentUserRef.current?.uid;
+    if (!uid) return;
+    deleteSavedSessionFromCloud(uid, sessionId).catch(console.warn);
   };
 
   // Due count calculation for SRS badge
@@ -357,6 +583,7 @@ export default function App() {
     if (resumedStudySession?.id === sessionId) {
       setResumedStudySession(null);
     }
+    handleSavedSessionDeletedCloud(sessionId);
   };
 
   const handleSelectList = (listId: string | null) => {
@@ -566,6 +793,9 @@ export default function App() {
                 initialQuestionLimit={sessionQuestionLimit}
                 resumedSession={resumedStudySession}
                 onSavedSessionsChange={refreshSavedSessions}
+                onSavedSessionUpserted={handleSavedSessionUpsertedCloud}
+                onSavedSessionDeleted={handleSavedSessionDeletedCloud}
+                onCharacterReviewed={handleCharacterReviewedCloud}
                 onFinishSession={() => {
                   refreshSavedSessions();
                   setResumedStudySession(null);

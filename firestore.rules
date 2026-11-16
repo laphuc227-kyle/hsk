@@ -52,6 +52,24 @@ service cloud.firestore {
       match /reviewLogs/{logId} {
         allow read, write: if isOwner(userId);
       }
+
+      // User's in-progress study sessions (cross-device resume)
+      match /savedSessions/{sessionId} {
+        allow get, delete: if isOwner(userId) && isValidId(sessionId);
+        allow list: if isOwner(userId);
+        allow create, update: if isOwner(userId) && isValidId(sessionId) &&
+          request.resource.data.userId == userId &&
+          request.resource.data.id == sessionId &&
+          request.resource.data.mode is string &&
+          request.resource.data.mode.size() > 0 &&
+          request.resource.data.mode.size() <= 50 &&
+          request.resource.data.questions is list &&
+          request.resource.data.questions.size() > 0 &&
+          request.resource.data.questions.size() <= 5000 &&
+          request.resource.data.currentIndex is number &&
+          request.resource.data.currentIndex >= 0 &&
+          request.resource.data.updatedAt is number;
+      }
     }
   }
 }

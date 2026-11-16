@@ -12,13 +12,23 @@ import {
   doc,
   collection,
   getDoc,
+  getDocFromServer,
   getDocs,
   setDoc,
   deleteDoc,
   writeBatch,
 } from 'firebase/firestore';
 import firebaseConfig from '../../firebase-applet-config.json';
-import { Character, WordList, UserStats } from '../types';
+import {
+  Character,
+  WordList,
+  UserStats,
+  QuizQuestion,
+  SavedStudySession,
+  SavedSessionResult,
+} from '../types';
+import { DEFAULT_SRS } from './dictionary';
+import { lookupBuiltIn } from './builtInDictionary';
 
 // Initialize Firebase App singleton
 export const app = !getApps().length ? initializeApp(firebaseConfig) : getApp();
@@ -26,6 +36,16 @@ export const app = !getApps().length ? initializeApp(firebaseConfig) : getApp();
 export const db = getFirestore(app, firebaseConfig.firestoreDatabaseId);
 export const auth = getAuth(app);
 const googleProvider = new GoogleAuthProvider();
+
+export async function testFirestoreConnection(): Promise<void> {
+  try {
+    await getDocFromServer(doc(db, 'test', 'connection'));
+  } catch (error) {
+    if (error instanceof Error && error.message.includes('the client is offline')) {
+      console.error('Please check your Firebase configuration (client offline).');
+    }
+  }
+}
 
 export enum OperationType {
   CREATE = 'create',
@@ -240,6 +260,239 @@ export async function saveUserStatsToCloud(userId: string, stats: UserStats): Pr
     const docRef = doc(db, 'users', userId, 'stats', 'main');
     const cleanStats = sanitizeForFirestore({ ...stats, userId, updatedAt: Date.now() });
     await setDoc(docRef, cleanStats, { merge: true });
+  } catch (err) {
+    handleFirestoreError(err, OperationType.WRITE, path);
+  }
+}
+
+// ================= SAVED STUDY SESSIONS (CROSS-DEVICE RESUME) =================
+
+function compactQuestionForCloud(q: QuizQuestion) {
+  return {
+    id: q.id,
+    type: q.type,
+    characterId: q.character?.id || '',
+    hanzi: q.character?.hanzi || '',
+    pinyin: q.character?.pinyin || '',
+    hanViet: q.character?.hanViet || '',
+    meaning: q.character?.meaning || '',
+    radical: q.character?.radical || '',
+    strokeCount: q.character?.strokeCount || q.character?.hanzi?.length || 1,
+    prompt: q.prompt,
+    subtitle: q.subtitle ?? null,
+    audioText: q.audioText ?? null,
+    options: q.options ?? null,
+    correctAnswer: q.correctAnswer,
+    explanation: q.explanation ?? null,
+    matchPairs: q.matchPairs ?? null,
+    scrambledTokens: q.scrambledTokens ?? null,
+    clozeSentence: q.clozeSentence ?? null,
+  };
+}
+
+function hydrateQuestionFromCloud(
+  rawQ: any,
+  charById: Map<string, Character>,
+  charByHanzi: Map<string, Character>
+): QuizQuestion | null {
+  if (!rawQ || typeof rawQ.id !== 'string') return null;
+  const hanzi = typeof rawQ.hanzi === 'string' ? rawQ.hanzi : '';
+  const characterId = typeof rawQ.characterId === 'string' ? rawQ.characterId : '';
+  const matchedChar =
+    (characterId && charById.get(characterId)) ||
+    (hanzi && charByHanzi.get(hanzi)) ||
+    rawQ.character;
+
+  let character: Character;
+  if (matchedChar && matchedChar.hanzi) {
+    character = matchedChar;
+  } else {
+    const dict = hanzi ? lookupBuiltIn(hanzi) : undefined;
+    character = {
+      id: characterId || `cloud_${hanzi}`,
+      hanzi,
+      pinyin: rawQ.pinyin || dict?.pinyin || '',
+      hanViet: rawQ.hanViet || dict?.hanViet || '',
+      meaning: rawQ.meaning || dict?.meaning || '',
+      radical: rawQ.radical || dict?.radical || '',
+      strokeCount: Number(rawQ.strokeCount) || dict?.strokeCount || Math.max(1, hanzi.length),
+      components: dict?.components,
+      mnemonic: dict?.mnemonic,
+      examples: dict?.examples,
+      compoundWords: dict?.compoundWords,
+      listIds: [],
+      createdAt: Date.now(),
+      srs: { ...DEFAULT_SRS },
+    };
+  }
+
+  return {
+    id: rawQ.id,
+    type: rawQ.type,
+    character,
+    prompt: rawQ.prompt || '',
+    subtitle: rawQ.subtitle ?? undefined,
+    audioText: rawQ.audioText ?? undefined,
+    options: Array.isArray(rawQ.options) ? rawQ.options : undefined,
+    correctAnswer: rawQ.correctAnswer || '',
+    explanation: rawQ.explanation ?? undefined,
+    matchPairs: Array.isArray(rawQ.matchPairs) ? rawQ.matchPairs : undefined,
+    scrambledTokens: Array.isArray(rawQ.scrambledTokens) ? rawQ.scrambledTokens : undefined,
+    clozeSentence: rawQ.clozeSentence ?? undefined,
+  };
+}
+
+function compactResultForCloud(r: SavedSessionResult) {
+  return {
+    questionId: r.question?.id || '',
+    hanzi: r.question?.character?.hanzi || '',
+    userAnswer: r.userAnswer ?? null,
+    isCorrect: Boolean(r.isCorrect),
+    ratingLabel: r.ratingLabel ?? null,
+  };
+}
+
+function hydrateResultFromCloud(
+  rawR: any,
+  questions: QuizQuestion[]
+): SavedSessionResult | null {
+  if (!rawR) return null;
+  if (rawR.question && rawR.question.character) {
+    return {
+      question: rawR.question,
+      userAnswer: rawR.userAnswer ?? undefined,
+      isCorrect: Boolean(rawR.isCorrect),
+      ratingLabel: rawR.ratingLabel ?? undefined,
+    };
+  }
+  const matchedQuestion =
+    questions.find((q) => q.id === rawR.questionId) ||
+    questions.find((q) => q.character?.hanzi === rawR.hanzi);
+  if (!matchedQuestion) return null;
+  return {
+    question: matchedQuestion,
+    userAnswer: rawR.userAnswer ?? undefined,
+    isCorrect: Boolean(rawR.isCorrect),
+    ratingLabel: rawR.ratingLabel ?? undefined,
+  };
+}
+
+function compactSessionForCloud(userId: string, session: SavedStudySession) {
+  return sanitizeForFirestore({
+    id: session.id,
+    userId,
+    mode: session.mode,
+    selectedListId: session.selectedListId ?? null,
+    questionLimit: session.questionLimit,
+    questions: session.questions.map(compactQuestionForCloud),
+    currentIndex: session.currentIndex,
+    correctCount: session.correctCount,
+    incorrectCount: session.incorrectCount,
+    sessionResults: (session.sessionResults || []).map(compactResultForCloud),
+    elapsedMs: session.elapsedMs || 0,
+    createdAt: session.createdAt || Date.now(),
+    updatedAt: session.updatedAt || Date.now(),
+  });
+}
+
+export async function loadSavedSessionsFromCloud(
+  userId: string,
+  allCharacters: Character[]
+): Promise<SavedStudySession[]> {
+  const path = `users/${userId}/savedSessions`;
+  try {
+    const colRef = collection(db, 'users', userId, 'savedSessions');
+    const snapshot = await getDocs(colRef);
+    const charById = new Map<string, Character>();
+    const charByHanzi = new Map<string, Character>();
+    allCharacters.forEach((c) => {
+      if (c.id) charById.set(c.id, c);
+      if (c.hanzi) charByHanzi.set(c.hanzi, c);
+    });
+
+    const sessions: SavedStudySession[] = [];
+    snapshot.forEach((docSnap) => {
+      const data = docSnap.data();
+      if (!data || !Array.isArray(data.questions) || data.questions.length === 0) return;
+
+      const hydratedQuestions = data.questions
+        .map((q: any) => hydrateQuestionFromCloud(q, charById, charByHanzi))
+        .filter((q: QuizQuestion | null): q is QuizQuestion => Boolean(q));
+
+      if (hydratedQuestions.length === 0) return;
+
+      const currentIndex = typeof data.currentIndex === 'number' ? data.currentIndex : 0;
+      if (currentIndex < 0 || currentIndex >= hydratedQuestions.length) return;
+
+      const hydratedResults = Array.isArray(data.sessionResults)
+        ? data.sessionResults
+            .map((r: any) => hydrateResultFromCloud(r, hydratedQuestions))
+            .filter((r: SavedSessionResult | null): r is SavedSessionResult => Boolean(r))
+        : [];
+
+      sessions.push({
+        id: data.id || docSnap.id,
+        mode: data.mode,
+        selectedListId: data.selectedListId ?? null,
+        questionLimit: data.questionLimit ?? 'all',
+        questions: hydratedQuestions,
+        currentIndex,
+        correctCount: Number(data.correctCount) || 0,
+        incorrectCount: Number(data.incorrectCount) || 0,
+        sessionResults: hydratedResults,
+        elapsedMs: Number(data.elapsedMs) || 0,
+        createdAt: Number(data.createdAt) || Date.now(),
+        updatedAt: Number(data.updatedAt) || Date.now(),
+      });
+    });
+
+    return sessions.sort((a, b) => (b.updatedAt || 0) - (a.updatedAt || 0));
+  } catch (err) {
+    handleFirestoreError(err, OperationType.LIST, path);
+    return [];
+  }
+}
+
+export async function saveSavedSessionToCloud(
+  userId: string,
+  session: SavedStudySession
+): Promise<void> {
+  const path = `users/${userId}/savedSessions/${session.id}`;
+  try {
+    const docRef = doc(db, 'users', userId, 'savedSessions', session.id);
+    const payload = compactSessionForCloud(userId, session);
+    await setDoc(docRef, payload, { merge: false });
+  } catch (err) {
+    handleFirestoreError(err, OperationType.WRITE, path);
+  }
+}
+
+export async function deleteSavedSessionFromCloud(
+  userId: string,
+  sessionId: string
+): Promise<void> {
+  const path = `users/${userId}/savedSessions/${sessionId}`;
+  try {
+    const docRef = doc(db, 'users', userId, 'savedSessions', sessionId);
+    await deleteDoc(docRef);
+  } catch (err) {
+    handleFirestoreError(err, OperationType.DELETE, path);
+  }
+}
+
+export async function saveSavedSessionsBatchToCloud(
+  userId: string,
+  sessions: SavedStudySession[]
+): Promise<void> {
+  if (sessions.length === 0) return;
+  const path = `users/${userId}/savedSessions`;
+  try {
+    const batch = writeBatch(db);
+    sessions.forEach((session) => {
+      const docRef = doc(db, 'users', userId, 'savedSessions', session.id);
+      batch.set(docRef, compactSessionForCloud(userId, session), { merge: false });
+    });
+    await batch.commit();
   } catch (err) {
     handleFirestoreError(err, OperationType.WRITE, path);
   }

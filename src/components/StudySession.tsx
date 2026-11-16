@@ -25,6 +25,9 @@ interface StudySessionProps {
   initialQuestionLimit?: number | 'all';
   resumedSession?: SavedStudySession | null;
   onSavedSessionsChange?: () => void;
+  onSavedSessionUpserted?: (session: SavedStudySession, immediate?: boolean) => void;
+  onSavedSessionDeleted?: (sessionId: string) => void;
+  onCharacterReviewed?: (updatedChar: Character) => void;
   onFinishSession: () => void;
   onOpenCharacterDetail: (character: Character) => void;
   onChangeList?: (listId: string | null) => void;
@@ -38,6 +41,9 @@ export const StudySession: React.FC<StudySessionProps> = ({
   initialQuestionLimit = 20,
   resumedSession = null,
   onSavedSessionsChange,
+  onSavedSessionUpserted,
+  onSavedSessionDeleted,
+  onCharacterReviewed,
   onFinishSession,
   onOpenCharacterDetail,
   onChangeList,
@@ -270,12 +276,13 @@ export const StudySession: React.FC<StudySessionProps> = ({
     strokeRevealed,
   };
 
-  const persistProgressNow = (notifyParent: boolean = true) => {
+  const persistProgressNow = (notifyParent: boolean = true, immediateCloud: boolean = false) => {
     const snap = latestProgressRef.current;
     if (!snap.questions || snap.questions.length === 0) return;
 
     if (snap.isCompleted) {
       removeSavedStudySession(snap.activeSessionId);
+      onSavedSessionDeleted?.(snap.activeSessionId);
       if (notifyParent && onSavedSessionsChange) onSavedSessionsChange();
       return;
     }
@@ -294,11 +301,12 @@ export const StudySession: React.FC<StudySessionProps> = ({
 
     if (resumeIndex >= snap.questions.length) {
       removeSavedStudySession(snap.activeSessionId);
+      onSavedSessionDeleted?.(snap.activeSessionId);
       if (notifyParent && onSavedSessionsChange) onSavedSessionsChange();
       return;
     }
 
-    upsertSavedStudySession({
+    const sessionPayload: SavedStudySession = {
       id: snap.activeSessionId,
       mode: snap.mode,
       selectedListId: snap.selectedListId,
@@ -311,27 +319,39 @@ export const StudySession: React.FC<StudySessionProps> = ({
       elapsedMs: priorElapsedRef.current + (Date.now() - startTime),
       createdAt: createdAtRef.current,
       updatedAt: Date.now(),
-    });
+    };
+
+    upsertSavedStudySession(sessionPayload);
+    onSavedSessionUpserted?.(sessionPayload, immediateCloud);
     if (notifyParent && onSavedSessionsChange) onSavedSessionsChange();
   };
 
   useEffect(() => {
-    persistProgressNow(true);
+    persistProgressNow(true, false);
   }, [currentIndex, sessionResults.length, isCompleted, isAnswered, strokeRevealed]);
 
   useEffect(() => {
-    const handleBeforeUnload = () => {
-      persistProgressNow(false);
+    const handleFlush = () => {
+      persistProgressNow(false, true);
     };
-    window.addEventListener('beforeunload', handleBeforeUnload);
+    const handleVisibilityChange = () => {
+      if (document.visibilityState === 'hidden') {
+        persistProgressNow(false, true);
+      }
+    };
+    window.addEventListener('beforeunload', handleFlush);
+    window.addEventListener('pagehide', handleFlush);
+    document.addEventListener('visibilitychange', handleVisibilityChange);
     return () => {
-      window.removeEventListener('beforeunload', handleBeforeUnload);
-      persistProgressNow(false);
+      window.removeEventListener('beforeunload', handleFlush);
+      window.removeEventListener('pagehide', handleFlush);
+      document.removeEventListener('visibilitychange', handleVisibilityChange);
+      persistProgressNow(false, true);
     };
   }, []);
 
   const handleExitSession = () => {
-    persistProgressNow(true);
+    persistProgressNow(true, true);
     onFinishSession();
   };
 
@@ -741,10 +761,12 @@ export const StudySession: React.FC<StudySessionProps> = ({
     const updatedSRS = calculateSRSUpdate(currentQ.character.srs, rating);
     const updatedChar: Character = {
       ...currentQ.character,
+      updatedAt: Date.now(),
       srs: updatedSRS,
     };
 
     addCharacter(updatedChar);
+    onCharacterReviewed?.(updatedChar);
 
     // Save review log
     addReviewLog({

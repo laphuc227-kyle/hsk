@@ -335,3 +335,21 @@ export function removeSavedStudySession(sessionId: string): SavedStudySession[] 
   persistSavedStudySessions(next);
   return next;
 }
+
+export function replaceSavedStudySessions(sessions: SavedStudySession[]): SavedStudySession[] {
+  const valid = sessions
+    .filter(
+      (s) =>
+        s &&
+        typeof s.id === 'string' &&
+        Array.isArray(s.questions) &&
+        s.questions.length > 0 &&
+        typeof s.currentIndex === 'number' &&
+        s.currentIndex >= 0 &&
+        s.currentIndex < s.questions.length
+    )
+    .sort((a, b) => (b.updatedAt || 0) - (a.updatedAt || 0))
+    .slice(0, MAX_SAVED_SESSIONS);
+  persistSavedStudySessions(valid);
+  return valid;
+}

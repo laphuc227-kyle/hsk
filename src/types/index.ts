@@ -89,6 +89,7 @@ export interface Character {
   compoundWords?: CompoundWord[];
   listIds: string[];
   createdAt: number;
+  updatedAt?: number;
   srs: SRSData;
 }
 

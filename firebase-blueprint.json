@@ -62,6 +62,27 @@
         "updatedAt": { "type": "number", "description": "Timestamp in milliseconds" }
       },
       "required": ["userId"]
+    },
+    "SavedStudySession": {
+      "title": "SavedStudySession",
+      "description": "In-progress study session saved for cross-device resume",
+      "type": "object",
+      "properties": {
+        "id": { "type": "string", "description": "Unique session identifier" },
+        "userId": { "type": "string", "description": "Owner user ID" },
+        "mode": { "type": "string", "description": "Study session mode" },
+        "selectedListId": { "type": "string", "description": "Selected list ID or null" },
+        "questionLimit": { "type": "string", "description": "Question limit count or 'all'" },
+        "questions": { "type": "array", "description": "Compact serialized quiz questions" },
+        "currentIndex": { "type": "number", "description": "Current question index" },
+        "correctCount": { "type": "number", "description": "Correct answers so far" },
+        "incorrectCount": { "type": "number", "description": "Incorrect answers so far" },
+        "sessionResults": { "type": "array", "description": "Compact serialized session results" },
+        "elapsedMs": { "type": "number", "description": "Elapsed study duration in milliseconds" },
+        "createdAt": { "type": "number", "description": "Creation timestamp in milliseconds" },
+        "updatedAt": { "type": "number", "description": "Last update timestamp in milliseconds" }
+      },
+      "required": ["id", "userId", "mode", "questions", "currentIndex", "updatedAt"]
     }
   },
   "firestore": {
@@ -80,6 +101,10 @@
     "/users/{userId}/stats/main": {
       "schema": "UserStats",
       "description": "Learning stats and streak for the user"
+    },
+    "/users/{userId}/savedSessions/{sessionId}": {
+      "schema": "SavedStudySession",
+      "description": "In-progress study sessions for cross-device resume"
     }
   }
 }
