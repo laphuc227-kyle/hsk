@@ -1,4 +1,4 @@
-import { Character, WordList, ReviewLog, UserStats } from '../types';
+import { Character, WordList, ReviewLog, UserStats, SavedStudySession } from '../types';
 import { INITIAL_CHARACTERS, INITIAL_WORD_LISTS, DEFAULT_SRS } from './dictionary';
 import { lookupBuiltIn } from './builtInDictionary';
 
@@ -7,6 +7,7 @@ const KEYS = {
   WORD_LISTS: 'hanzi_tutor_lists_v2',
   REVIEW_LOGS: 'hanzi_tutor_logs_v2',
   USER_STATS: 'hanzi_tutor_stats_v2',
+  SAVED_SESSIONS: 'hanzi_tutor_saved_sessions_v1',
 };
 
 // Initialize default storage if empty
@@ -274,5 +275,63 @@ export function resetAllData(): void {
   localStorage.removeItem(KEYS.WORD_LISTS);
   localStorage.removeItem(KEYS.REVIEW_LOGS);
   localStorage.removeItem(KEYS.USER_STATS);
+  localStorage.removeItem(KEYS.SAVED_SESSIONS);
   initializeStorage();
+}
+
+// In-progress Study Session Persistence (Resume unfinished sessions)
+const MAX_SAVED_SESSIONS = 5;
+
+export function getSavedStudySessions(): SavedStudySession[] {
+  try {
+    const raw = localStorage.getItem(KEYS.SAVED_SESSIONS);
+    if (!raw) return [];
+    const parsed = JSON.parse(raw);
+    if (!Array.isArray(parsed)) return [];
+    return parsed
+      .filter(
+        (s: SavedStudySession) =>
+          s &&
+          typeof s.id === 'string' &&
+          Array.isArray(s.questions) &&
+          s.questions.length > 0 &&
+          typeof s.currentIndex === 'number' &&
+          s.currentIndex >= 0 &&
+          s.currentIndex < s.questions.length
+      )
+      .sort((a: SavedStudySession, b: SavedStudySession) => (b.updatedAt || 0) - (a.updatedAt || 0));
+  } catch (e) {
+    console.error('Error reading saved study sessions:', e);
+    return [];
+  }
+}
+
+function persistSavedStudySessions(sessions: SavedStudySession[]): void {
+  try {
+    localStorage.setItem(KEYS.SAVED_SESSIONS, JSON.stringify(sessions));
+  } catch (e) {
+    // Handle tight storage quota gracefully by keeping only the latest session
+    try {
+      if (sessions.length > 1) {
+        localStorage.setItem(KEYS.SAVED_SESSIONS, JSON.stringify(sessions.slice(0, 1)));
+      }
+    } catch (innerErr) {
+      console.error('Error saving study sessions:', innerErr);
+    }
+  }
+}
+
+export function upsertSavedStudySession(session: SavedStudySession): SavedStudySession[] {
+  const existing = getSavedStudySessions().filter((s) => s.id !== session.id);
+  const next = [session, ...existing]
+    .sort((a, b) => (b.updatedAt || 0) - (a.updatedAt || 0))
+    .slice(0, MAX_SAVED_SESSIONS);
+  persistSavedStudySessions(next);
+  return next;
+}
+
+export function removeSavedStudySession(sessionId: string): SavedStudySession[] {
+  const next = getSavedStudySessions().filter((s) => s.id !== sessionId);
+  persistSavedStudySessions(next);
+  return next;
 }

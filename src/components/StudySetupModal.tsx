@@ -14,9 +14,13 @@ import {
   FileQuestion,
   PenTool,
   Combine,
+  Play,
+  Trash2,
+  Clock,
 } from 'lucide-react';
-import { WordList, StudySessionMode, Character } from '../types';
+import { WordList, StudySessionMode, Character, SavedStudySession } from '../types';
 import { detectCompoundWordsFromCharacters } from '../services/compoundWordDetector';
+import { getStudyModeLabel, getStudySourceLabel, formatRelativeTimeVi } from '../utils/sessionFormat';
 
 interface StudySetupModalProps {
   isOpen: boolean;
@@ -24,6 +28,9 @@ interface StudySetupModalProps {
   initialListId?: string | null;
   wordLists: WordList[];
   allCharacters: Character[];
+  savedSessions?: SavedStudySession[];
+  onResumeSession?: (session: SavedStudySession) => void;
+  onDeleteSavedSession?: (sessionId: string) => void;
   onClose: () => void;
   onConfirmStart: (mode: StudySessionMode, listId: string | null, questionLimit?: number | 'all') => void;
 }
@@ -34,6 +41,9 @@ export const StudySetupModal: React.FC<StudySetupModalProps> = ({
   initialListId = null,
   wordLists,
   allCharacters,
+  savedSessions = [],
+  onResumeSession,
+  onDeleteSavedSession,
   onClose,
   onConfirmStart,
 }) => {
@@ -166,6 +176,79 @@ export const StudySetupModal: React.FC<StudySetupModalProps> = ({
 
         {/* Modal Scrollable Body */}
         <div className="p-6 overflow-y-auto space-y-6 scrollbar-thin scrollbar-thumb-slate-800">
+          {/* Resume In-Progress Session Banner if matching mode */}
+          {(() => {
+            const matchingSessions = savedSessions.filter((s) => s.mode === initialMode);
+            if (matchingSessions.length === 0 || !onResumeSession) return null;
+            return (
+              <div className="p-3.5 rounded-2xl bg-amber-950/35 border border-amber-500/40 space-y-2.5">
+                <div className="flex items-center justify-between gap-2">
+                  <div className="flex items-center gap-2 text-xs font-bold text-amber-300">
+                    <Clock className="w-4 h-4 text-amber-400 shrink-0" />
+                    <span>Bạn có bài {getStudyModeLabel(initialMode)} đang làm dở</span>
+                  </div>
+                </div>
+                <div className="space-y-2">
+                  {matchingSessions.map((sess) => {
+                    const total = sess.questions.length;
+                    const done = sess.currentIndex;
+                    const pct = Math.min(100, Math.round((done / total) * 100));
+                    return (
+                      <div
+                        key={sess.id}
+                        className="p-2.5 rounded-xl bg-slate-950/80 border border-slate-800 flex flex-col sm:flex-row sm:items-center justify-between gap-2.5"
+                      >
+                        <div className="min-w-0 space-y-1 flex-1">
+                          <div className="flex items-center gap-2 text-xs text-slate-200 font-semibold flex-wrap">
+                            <span>{getStudySourceLabel(sess.selectedListId, wordLists)}</span>
+                            <span className="text-slate-500" aria-hidden="true">·</span>
+                            <span className="font-mono text-amber-300 tabular-nums">
+                              {done}/{total} câu ({pct}%)
+                            </span>
+                            <span className="text-slate-500" aria-hidden="true">·</span>
+                            <span className="text-[11px] text-slate-400 font-normal">
+                              {formatRelativeTimeVi(sess.updatedAt)}
+                            </span>
+                          </div>
+                          <div className="w-full bg-slate-900 h-1.5 rounded-full overflow-hidden">
+                            <div
+                              className="bg-gradient-to-r from-amber-400 to-emerald-400 h-full"
+                              style={{ width: `${pct}%` }}
+                            />
+                          </div>
+                        </div>
+                        <div className="flex items-center gap-1.5 shrink-0">
+                          <button
+                            type="button"
+                            onClick={() => {
+                              onClose();
+                              onResumeSession(sess);
+                            }}
+                            className="px-3 py-1.5 text-xs font-bold text-slate-950 bg-gradient-to-r from-amber-400 to-emerald-400 hover:from-amber-300 hover:to-emerald-300 rounded-xl transition cursor-pointer flex items-center gap-1.5 active:scale-95"
+                          >
+                            <Play className="w-3.5 h-3.5 fill-slate-950" />
+                            <span>Làm tiếp câu {done + 1}</span>
+                          </button>
+                          {onDeleteSavedSession && (
+                            <button
+                              type="button"
+                              onClick={() => onDeleteSavedSession(sess.id)}
+                              className="p-1.5 text-slate-400 hover:text-rose-400 hover:bg-rose-950/40 rounded-lg transition cursor-pointer"
+                              title="Xóa bài làm dở này"
+                              aria-label="Xóa bài làm dở"
+                            >
+                              <Trash2 className="w-3.5 h-3.5" />
+                            </button>
+                          )}
+                        </div>
+                      </div>
+                    );
+                  })}
+                </div>
+              </div>
+            );
+          })()}
+
           {/* Step 1: Select Vocabulary Source */}
           <div className="space-y-3">
             <label className="text-xs font-bold text-slate-300 uppercase tracking-wider flex items-center justify-between">

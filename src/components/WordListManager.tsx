@@ -1,7 +1,7 @@
 import React, { useState, useMemo } from 'react';
 import { motion, AnimatePresence } from 'motion/react';
-import { Plus, Trash2, Search, Sparkles, BookOpen, Layers, Volume2, Edit, Loader2, ListPlus, FileText, CheckCircle2, Target, Zap, Flame, GraduationCap, Download, Copy, Check, FileSpreadsheet, Share2, Combine, ArrowRight, FileQuestion, X, PenTool } from 'lucide-react';
-import { Character, WordList, StudySessionMode } from '../types';
+import { Plus, Trash2, Search, Sparkles, BookOpen, Layers, Volume2, Edit, Loader2, ListPlus, FileText, CheckCircle2, Target, Zap, Flame, GraduationCap, Download, Copy, Check, FileSpreadsheet, Share2, Combine, ArrowRight, FileQuestion, X, PenTool, Play, Clock } from 'lucide-react';
+import { Character, WordList, StudySessionMode, SavedStudySession } from '../types';
 import { addCharacter, removeCharacter, saveWordLists, saveCharacters } from '../services/storage';
 import { DEFAULT_SRS } from '../services/dictionary';
 import { speakChinese } from '../services/audio';
@@ -11,11 +11,15 @@ import { lookupBuiltIn } from '../services/builtInDictionary';
 import { getApiUrl, isStaticHost } from '../services/apiClient';
 import { filterAndRankCharacters, stripAccents, SmartSearchConstituent } from '../services/smartSearch';
 import { findRadicalInfo } from '../services/radicalsDatabase';
+import { getStudyModeLabel, getStudySourceLabel, formatRelativeTimeVi } from '../utils/sessionFormat';
 
 interface WordListManagerProps {
   characters: Character[];
   wordLists: WordList[];
   selectedListId: string | null;
+  savedSessions?: SavedStudySession[];
+  onResumeSession?: (session: SavedStudySession) => void;
+  onDeleteSavedSession?: (sessionId: string) => void;
   onSelectList: (listId: string | null) => void;
   onRefreshData: () => void;
   onSelectCharacter: (character: Character) => void;
@@ -26,6 +30,9 @@ export const WordListManager: React.FC<WordListManagerProps> = ({
   characters,
   wordLists,
   selectedListId,
+  savedSessions = [],
+  onResumeSession,
+  onDeleteSavedSession,
   onSelectList,
   onRefreshData,
   onSelectCharacter,
@@ -660,6 +667,91 @@ export const WordListManager: React.FC<WordListManagerProps> = ({
           </button>
         </div>
       </div>
+
+      {/* Resume Unfinished Study Sessions Section */}
+      {savedSessions.length > 0 && onResumeSession && (
+        <div className="bg-slate-900/85 border border-amber-500/35 rounded-2xl p-4 shadow-xl space-y-3">
+          <div className="flex items-center justify-between gap-2">
+            <div className="flex items-center gap-2">
+              <Clock className="w-4 h-4 text-amber-400 shrink-0" />
+              <h3 className="text-sm font-bold text-amber-200">
+                Tiếp tục bài học đang làm dở ({savedSessions.length})
+              </h3>
+            </div>
+            <span className="text-[11px] text-slate-400">Tự động lưu tiến độ khi thoát</span>
+          </div>
+
+          <div className="grid grid-cols-1 md:grid-cols-2 gap-3">
+            {savedSessions.map((sess) => {
+              const total = sess.questions.length;
+              const done = sess.currentIndex;
+              const remaining = Math.max(0, total - done);
+              const pct = Math.min(100, Math.round((done / total) * 100));
+
+              return (
+                <div
+                  key={sess.id}
+                  className="p-3.5 rounded-xl bg-slate-950/90 border border-slate-800 hover:border-amber-500/40 transition flex flex-col justify-between gap-3"
+                >
+                  <div className="space-y-2">
+                    <div className="flex items-start justify-between gap-2">
+                      <div className="min-w-0">
+                        <div className="text-xs font-bold text-slate-100 truncate">
+                          {getStudyModeLabel(sess.mode)}
+                        </div>
+                        <div className="text-[11px] text-slate-400 flex items-center gap-1.5 flex-wrap pt-0.5">
+                          <span>{getStudySourceLabel(sess.selectedListId, wordLists)}</span>
+                          <span aria-hidden="true">·</span>
+                          <span>{formatRelativeTimeVi(sess.updatedAt)}</span>
+                        </div>
+                      </div>
+                      <span className="text-xs font-mono font-bold text-amber-300 tabular-nums shrink-0">
+                        {done}/{total} câu
+                      </span>
+                    </div>
+
+                    <div className="space-y-1">
+                      <div className="w-full bg-slate-900 h-2 rounded-full overflow-hidden border border-slate-800/80">
+                        <div
+                          className="bg-gradient-to-r from-amber-400 via-teal-400 to-emerald-400 h-full transition-all duration-300"
+                          style={{ width: `${pct}%` }}
+                        />
+                      </div>
+                      <div className="flex items-center justify-between text-[11px] text-slate-400 tabular-nums">
+                        <span>Đã xong {pct}%</span>
+                        <span>Còn lại {remaining} câu</span>
+                      </div>
+                    </div>
+                  </div>
+
+                  <div className="flex items-center justify-between gap-2 pt-1">
+                    <button
+                      type="button"
+                      onClick={() => onResumeSession(sess)}
+                      className="flex-1 py-2 px-3.5 rounded-xl bg-gradient-to-r from-amber-400 via-teal-300 to-emerald-400 hover:from-amber-300 hover:to-emerald-300 text-slate-950 font-bold text-xs shadow-md shadow-emerald-500/15 flex items-center justify-center gap-1.5 cursor-pointer transition active:scale-[0.98]"
+                    >
+                      <Play className="w-3.5 h-3.5 fill-slate-950" />
+                      <span>Làm tiếp (Câu {done + 1}/{total})</span>
+                    </button>
+
+                    {onDeleteSavedSession && (
+                      <button
+                        type="button"
+                        onClick={() => onDeleteSavedSession(sess.id)}
+                        className="p-2 text-slate-400 hover:text-rose-400 bg-slate-900 hover:bg-rose-950/40 border border-slate-800 hover:border-rose-500/30 rounded-xl transition cursor-pointer shrink-0"
+                        title="Xóa bài đang làm dở này"
+                        aria-label="Xóa bài đang làm dở"
+                      >
+                        <Trash2 className="w-4 h-4" />
+                      </button>
+                    )}
+                  </div>
+                </div>
+              );
+            })}
+          </div>
+        </div>
+      )}
 
       {/* Conditionally Render Filter Bar */}
       {/* 1. Custom lists: 3-way Filter (Tất cả, Chữ đơn, Từ ghép) */}

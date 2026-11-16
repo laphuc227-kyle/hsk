@@ -162,3 +162,25 @@ export interface AIResponseEnrich {
   examples?: ExampleSentence[];
   compoundWords?: CompoundWord[];
 }
+
+export interface SavedSessionResult {
+  question: QuizQuestion;
+  userAnswer?: string;
+  isCorrect: boolean;
+  ratingLabel?: string;
+}
+
+export interface SavedStudySession {
+  id: string;
+  mode: StudySessionMode;
+  selectedListId: string | null;
+  questionLimit: number | 'all';
+  questions: QuizQuestion[];
+  currentIndex: number;
+  correctCount: number;
+  incorrectCount: number;
+  sessionResults: SavedSessionResult[];
+  elapsedMs: number;
+  createdAt: number;
+  updatedAt: number;
+}

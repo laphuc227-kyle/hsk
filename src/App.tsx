@@ -27,7 +27,7 @@ import {
   X,
 } from 'lucide-react';
 import { User } from 'firebase/auth';
-import { Character, WordList, UserStats, StudySessionMode } from './types';
+import { Character, WordList, UserStats, StudySessionMode, SavedStudySession } from './types';
 import {
   initializeStorage,
   getCharacters,
@@ -37,6 +37,8 @@ import {
   getUserStats,
   saveUserStats,
   removeCharacter,
+  getSavedStudySessions,
+  removeSavedStudySession,
 } from './services/storage';
 import { autoCategorizeCharacters } from './services/hskClassifier';
 import { syncLearnedCompoundWords } from './services/compoundWordDetector';
@@ -92,11 +94,18 @@ export default function App() {
     setSourceCharacterForRadical(null);
   };
 
-  // Study Setup Modal State
+  // Study Setup Modal & Resume Session State
   const [isSetupModalOpen, setIsSetupModalOpen] = useState(false);
   const [pendingStudyMode, setPendingStudyMode] = useState<StudySessionMode>('smart_daily');
   const [pendingListId, setPendingListId] = useState<string | null>(null);
   const [sessionQuestionLimit, setSessionQuestionLimit] = useState<number | 'all'>(20);
+  const [savedSessions, setSavedSessions] = useState<SavedStudySession[]>([]);
+  const [resumedStudySession, setResumedStudySession] = useState<SavedStudySession | null>(null);
+  const [sessionInstanceKey, setSessionInstanceKey] = useState<number>(0);
+
+  const refreshSavedSessions = () => {
+    setSavedSessions(getSavedStudySessions());
+  };
 
   // Initialize and load data on mount, plus subscribe to Firebase Auth
   useEffect(() => {
@@ -109,6 +118,7 @@ export default function App() {
     setCharacters(categorized);
     setWordLists(getWordLists());
     setStats(getUserStats());
+    setSavedSessions(getSavedStudySessions());
 
     // Subscribe to Firebase Auth
     const unsubscribe = subscribeToAuth((user) => {
@@ -295,6 +305,7 @@ export default function App() {
     const lists = getWordLists();
     setWordLists(lists);
     setStats(getUserStats());
+    setSavedSessions(getSavedStudySessions());
 
     // If logged in, automatically push updates to Cloud
     if (currentUser) {
@@ -318,13 +329,34 @@ export default function App() {
     listId: string | null,
     questionLimit?: number | 'all'
   ) => {
+    setResumedStudySession(null);
     setStudyMode(mode);
     setSelectedListId(listId);
     if (questionLimit !== undefined) {
       setSessionQuestionLimit(questionLimit);
     }
+    setSessionInstanceKey((prev) => prev + 1);
     setIsSetupModalOpen(false);
     setActiveView('study');
+  };
+
+  const handleResumeStudySession = (session: SavedStudySession) => {
+    setResumedStudySession(session);
+    setStudyMode(session.mode);
+    setSelectedListId(session.selectedListId);
+    setSessionQuestionLimit(session.questionLimit);
+    setSessionInstanceKey((prev) => prev + 1);
+    setIsSetupModalOpen(false);
+    setIsMobileMenuOpen(false);
+    setActiveView('study');
+  };
+
+  const handleDeleteSavedSession = (sessionId: string) => {
+    const updated = removeSavedStudySession(sessionId);
+    setSavedSessions(updated);
+    if (resumedStudySession?.id === sessionId) {
+      setResumedStudySession(null);
+    }
   };
 
   const handleSelectList = (listId: string | null) => {
@@ -479,6 +511,8 @@ export default function App() {
         onSignInGoogle={handleSignInGoogle}
         onSignOut={handleSignOut}
         onSyncNow={() => currentUser && syncCloudData(currentUser.uid)}
+        savedSessions={savedSessions}
+        onResumeSession={handleResumeStudySession}
       />
 
       {/* Main Content Area with Canva Slide Transition */}
@@ -506,13 +540,16 @@ export default function App() {
                 onRefreshData={refreshAllData}
                 onSelectCharacter={(char) => setSelectedCharacter(char)}
                 onStartSession={handleStartSession}
+                savedSessions={savedSessions}
+                onResumeSession={handleResumeStudySession}
+                onDeleteSavedSession={handleDeleteSavedSession}
               />
             </motion.div>
           )}
 
           {activeView === 'study' && (
             <motion.div
-              key={`study_${studyMode}_${selectedListId || 'all'}`}
+              key={`study_${studyMode}_${selectedListId || 'all'}_${sessionInstanceKey}`}
               variants={pageVariants}
               initial="initial"
               animate="animate"
@@ -521,13 +558,17 @@ export default function App() {
               className="w-full"
             >
               <StudySession
-                key={`session_${studyMode}_${selectedListId || 'all'}`}
+                key={`session_${studyMode}_${selectedListId || 'all'}_${sessionInstanceKey}`}
                 mode={studyMode}
                 allCharacters={characters}
                 selectedListId={selectedListId || undefined}
                 wordLists={wordLists}
                 initialQuestionLimit={sessionQuestionLimit}
+                resumedSession={resumedStudySession}
+                onSavedSessionsChange={refreshSavedSessions}
                 onFinishSession={() => {
+                  refreshSavedSessions();
+                  setResumedStudySession(null);
                   refreshAllData();
                   setActiveView('lists');
                 }}
@@ -659,6 +700,9 @@ export default function App() {
             initialListId={pendingListId}
             wordLists={wordLists}
             allCharacters={characters}
+            savedSessions={savedSessions}
+            onResumeSession={handleResumeStudySession}
+            onDeleteSavedSession={handleDeleteSavedSession}
             onClose={() => setIsSetupModalOpen(false)}
             onConfirmStart={handleConfirmStartStudy}
           />

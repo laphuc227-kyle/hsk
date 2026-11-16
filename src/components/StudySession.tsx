@@ -2,10 +2,15 @@ import React, { useState, useEffect, useRef } from 'react';
 import { createPortal } from 'react-dom';
 import { motion, AnimatePresence } from 'motion/react';
 import { Volume2, CheckCircle, XCircle, ArrowRight, RefreshCw, Sparkles, BookOpen, Clock, ShieldCheck, Award, Filter, Eye, EyeOff, FileQuestion, PenTool, X } from 'lucide-react';
-import { Character, QuizQuestion, StudySessionMode, QuestionType, WordList } from '../types';
+import { Character, QuizQuestion, StudySessionMode, QuestionType, WordList, SavedStudySession } from '../types';
 import { selectCharactersForSession, generateQuestionForCharacter, calculateSRSUpdate } from '../services/srs';
 import { generateSentenceClozeQuestions } from '../services/sentenceCloze';
-import { addCharacter, addReviewLog } from '../services/storage';
+import {
+  addCharacter,
+  addReviewLog,
+  upsertSavedStudySession,
+  removeSavedStudySession,
+} from '../services/storage';
 import { speakChinese } from '../services/audio';
 import { StrokeWriterCanvas } from './StrokeWriterCanvas';
 import { CompoundStrokeWriter } from './CompoundStrokeWriter';
@@ -18,6 +23,8 @@ interface StudySessionProps {
   selectedListId?: string;
   wordLists?: WordList[];
   initialQuestionLimit?: number | 'all';
+  resumedSession?: SavedStudySession | null;
+  onSavedSessionsChange?: () => void;
   onFinishSession: () => void;
   onOpenCharacterDetail: (character: Character) => void;
   onChangeList?: (listId: string | null) => void;
@@ -29,12 +36,19 @@ export const StudySession: React.FC<StudySessionProps> = ({
   selectedListId,
   wordLists = [],
   initialQuestionLimit = 20,
+  resumedSession = null,
+  onSavedSessionsChange,
   onFinishSession,
   onOpenCharacterDetail,
   onChangeList,
 }) => {
-  const [questions, setQuestions] = useState<QuizQuestion[]>([]);
-  const [currentIndex, setCurrentIndex] = useState(0);
+  const initialLimit = resumedSession ? resumedSession.questionLimit : initialQuestionLimit;
+  const [questions, setQuestions] = useState<QuizQuestion[]>(() => resumedSession?.questions || []);
+  const [currentIndex, setCurrentIndex] = useState(() =>
+    resumedSession
+      ? Math.min(resumedSession.currentIndex, Math.max(0, resumedSession.questions.length - 1))
+      : 0
+  );
   const [selectedOption, setSelectedOption] = useState<string | null>(null);
   const [typingInput, setTypingInput] = useState('');
   const [isAnswered, setIsAnswered] = useState(false);
@@ -79,9 +93,11 @@ export const StudySession: React.FC<StudySessionProps> = ({
   }, []);
 
   // Session Stats
-  const [correctCount, setCorrectCount] = useState(0);
-  const [incorrectCount, setIncorrectCount] = useState(0);
+  const [correctCount, setCorrectCount] = useState(() => resumedSession?.correctCount || 0);
+  const [incorrectCount, setIncorrectCount] = useState(() => resumedSession?.incorrectCount || 0);
   const [startTime] = useState(Date.now());
+  const priorElapsedRef = useRef<number>(resumedSession?.elapsedMs || 0);
+  const createdAtRef = useRef<number>(resumedSession?.createdAt || Date.now());
   const [isCompleted, setIsCompleted] = useState(false);
 
   // Detailed Answer Tracking
@@ -91,10 +107,18 @@ export const StudySession: React.FC<StudySessionProps> = ({
     isCorrect: boolean;
     ratingLabel?: string;
   }
-  const [sessionResults, setSessionResults] = useState<QuestionResult[]>([]);
+  const [sessionResults, setSessionResults] = useState<QuestionResult[]>(
+    () => resumedSession?.sessionResults || []
+  );
 
   // User custom question limit selection: 'all' or specific number
-  const [selectedQuestionLimit, setSelectedQuestionLimit] = useState<number | 'all'>(initialQuestionLimit);
+  const [selectedQuestionLimit, setSelectedQuestionLimit] = useState<number | 'all'>(initialLimit);
+
+  const initializedConfigKeyRef = useRef<string | null>(
+    resumedSession
+      ? `${resumedSession.mode}__${resumedSession.selectedListId || 'all'}__${resumedSession.questionLimit}`
+      : null
+  );
 
   // User customizable visibility settings (toggle ON/OFF for difficulty)
   const [showPinyin, setShowPinyin] = useState<boolean>(true);
@@ -136,8 +160,19 @@ export const StudySession: React.FC<StudySessionProps> = ({
   const availablePool = selectCharactersForSession(allCharacters, mode, selectedListId, 9999);
   const availablePoolCount = availablePool.length;
 
-  // Initialize session questions
+  // Initialize session questions (only when config changes or not yet initialized, preserving resumed/active progress)
   useEffect(() => {
+    const configKey = `${mode}__${selectedListId || 'all'}__${selectedQuestionLimit}`;
+    if (initializedConfigKeyRef.current === configKey && questions.length > 0) {
+      return;
+    }
+    if (allCharacters.length === 0 && availablePoolCount === 0) {
+      return;
+    }
+    initializedConfigKeyRef.current = configKey;
+    createdAtRef.current = Date.now();
+    priorElapsedRef.current = 0;
+
     let targetCount = availablePoolCount;
     if (selectedQuestionLimit !== 'all') {
       targetCount = Math.min(selectedQuestionLimit, availablePoolCount);
@@ -151,6 +186,8 @@ export const StudySession: React.FC<StudySessionProps> = ({
       );
       setQuestions(clozeQuestions);
       setSessionResults([]);
+      setCorrectCount(0);
+      setIncorrectCount(0);
       setCurrentIndex(0);
       setIsCompleted(false);
       return;
@@ -196,9 +233,107 @@ export const StudySession: React.FC<StudySessionProps> = ({
 
     setQuestions(generatedQuestions);
     setSessionResults([]);
+    setCorrectCount(0);
+    setIncorrectCount(0);
     setCurrentIndex(0);
     setIsCompleted(false);
   }, [mode, allCharacters, selectedListId, selectedQuestionLimit, availablePoolCount]);
+
+  // Ref & helpers for reliable auto-saving unfinished study sessions
+  const activeSessionId = `${mode}__${selectedListId || 'all'}`;
+  const latestProgressRef = useRef({
+    activeSessionId,
+    mode,
+    selectedListId: selectedListId || null,
+    selectedQuestionLimit,
+    questions,
+    currentIndex,
+    correctCount,
+    incorrectCount,
+    sessionResults,
+    isCompleted,
+    isAnswered,
+    strokeRevealed,
+  });
+  latestProgressRef.current = {
+    activeSessionId,
+    mode,
+    selectedListId: selectedListId || null,
+    selectedQuestionLimit,
+    questions,
+    currentIndex,
+    correctCount,
+    incorrectCount,
+    sessionResults,
+    isCompleted,
+    isAnswered,
+    strokeRevealed,
+  };
+
+  const persistProgressNow = (notifyParent: boolean = true) => {
+    const snap = latestProgressRef.current;
+    if (!snap.questions || snap.questions.length === 0) return;
+
+    if (snap.isCompleted) {
+      removeSavedStudySession(snap.activeSessionId);
+      if (notifyParent && onSavedSessionsChange) onSavedSessionsChange();
+      return;
+    }
+
+    const hasMadeProgress =
+      snap.currentIndex > 0 ||
+      snap.sessionResults.length > 0 ||
+      snap.isAnswered ||
+      snap.strokeRevealed;
+
+    if (!hasMadeProgress) return;
+
+    // If user already answered/skipped the current card, resume on the next card
+    const alreadyRecordedCurrent = snap.sessionResults.length > snap.currentIndex;
+    const resumeIndex = alreadyRecordedCurrent ? snap.currentIndex + 1 : snap.currentIndex;
+
+    if (resumeIndex >= snap.questions.length) {
+      removeSavedStudySession(snap.activeSessionId);
+      if (notifyParent && onSavedSessionsChange) onSavedSessionsChange();
+      return;
+    }
+
+    upsertSavedStudySession({
+      id: snap.activeSessionId,
+      mode: snap.mode,
+      selectedListId: snap.selectedListId,
+      questionLimit: snap.selectedQuestionLimit,
+      questions: snap.questions,
+      currentIndex: resumeIndex,
+      correctCount: snap.correctCount,
+      incorrectCount: snap.incorrectCount,
+      sessionResults: snap.sessionResults,
+      elapsedMs: priorElapsedRef.current + (Date.now() - startTime),
+      createdAt: createdAtRef.current,
+      updatedAt: Date.now(),
+    });
+    if (notifyParent && onSavedSessionsChange) onSavedSessionsChange();
+  };
+
+  useEffect(() => {
+    persistProgressNow(true);
+  }, [currentIndex, sessionResults.length, isCompleted, isAnswered, strokeRevealed]);
+
+  useEffect(() => {
+    const handleBeforeUnload = () => {
+      persistProgressNow(false);
+    };
+    window.addEventListener('beforeunload', handleBeforeUnload);
+    return () => {
+      window.removeEventListener('beforeunload', handleBeforeUnload);
+      persistProgressNow(false);
+    };
+  }, []);
+
+  const handleExitSession = () => {
+    persistProgressNow(true);
+    onFinishSession();
+  };
 
   const currentQ = questions[currentIndex];
 
@@ -633,7 +768,7 @@ export const StudySession: React.FC<StudySessionProps> = ({
 
   // Session Completion Screen
   if (isCompleted) {
-    const totalSpentSeconds = Math.round((Date.now() - startTime) / 1000);
+    const totalSpentSeconds = Math.round((priorElapsedRef.current + (Date.now() - startTime)) / 1000);
     const totalAsked = questions.length;
     const accuracyPct = Math.round((correctCount / totalAsked) * 100);
 
@@ -812,7 +947,7 @@ export const StudySession: React.FC<StudySessionProps> = ({
       isHoldTransition={isStrokeHoldBeforeReveal}
       forcePortraitMode={preferPortraitStrokeMode}
       onForcePortraitModeChange={setPreferPortraitStrokeMode}
-      onExit={onFinishSession}
+      onExit={handleExitSession}
       onSkipHold={() => {
         clearStrokeRevealTimer();
         setIsStrokeHoldBeforeReveal(false);
@@ -949,8 +1084,9 @@ export const StudySession: React.FC<StudySessionProps> = ({
           </button>
 
           <button
-            onClick={onFinishSession}
+            onClick={handleExitSession}
             className="text-xs font-medium text-slate-400 hover:text-slate-200 px-2 py-1 rounded cursor-pointer shrink-0"
+            title="Lưu tiến độ và quay về (có thể làm tiếp sau)"
           >
             Thoát
           </button>
@@ -1473,9 +1609,9 @@ export const StudySession: React.FC<StudySessionProps> = ({
                           </button>
                           <button
                             type="button"
-                            onClick={onFinishSession}
+                            onClick={handleExitSession}
                             className="p-1.5 rounded-xl text-xs font-medium text-slate-400 hover:text-slate-200 hover:bg-slate-800/80 transition cursor-pointer"
-                            title="Thoát phiên học"
+                            title="Lưu tiến độ và thoát phiên học"
                           >
                             <X className="w-4 h-4" />
                           </button>
@@ -1550,6 +1686,7 @@ export const StudySession: React.FC<StudySessionProps> = ({
                           <button
                             type="button"
                             onClick={() => {
+                              setCorrectCount((prev) => prev + 1);
                               setSessionResults((prev) => [
                                 ...prev,
                                 {
@@ -1729,6 +1866,7 @@ export const StudySession: React.FC<StudySessionProps> = ({
                   <button
                     type="button"
                     onClick={() => {
+                      setCorrectCount((prev) => prev + 1);
                       setSessionResults((prev) => [
                         ...prev,
                         {

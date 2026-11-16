@@ -304,27 +304,7 @@ export function selectCharactersForSession(
           (Array.from(text) as string[]).filter((ch) => /\p{Script=Han}/u.test(ch)).length;
 
         const singles = strokePool.filter((c) => countHanzi(c.hanzi) === 1).sort(srsSort);
-        let compounds = strokePool.filter((c) => countHanzi(c.hanzi) > 1).sort(srsSort);
-
-        // If user chose 'Tất cả từ vựng' (or a list with no compounds yet) and saved/fullMatch compounds are sparse,
-        // enrich with detected compound words from those characters so compound writing appears reliably.
-        const isAllVocab = !selectedListId || selectedListId === 'all';
-        if (selectedListId !== 'all_single' && (compounds.length === 0 || (isAllVocab && compounds.length < Math.ceil(targetCount / 2)))) {
-          const existingCompoundSet = new Set(compounds.map((c) => c.hanzi));
-          const detectedFromPool = detectCompoundWordsFromCharacters(
-            strokePool.length > 0 ? strokePool : allCharacters
-          );
-          const extraCompounds = detectedFromPool
-            .filter(
-              (dc) =>
-                /\p{Script=Han}/u.test(dc.word) &&
-                countHanzi(dc.word) > 1 &&
-                !existingCompoundSet.has(dc.word)
-            )
-            .map((dc) => convertCompoundToCharacter(dc, selectedListId ? [selectedListId] : ['all']))
-            .sort(srsSort);
-          compounds = [...compounds, ...extraCompounds];
-        }
+        const compounds = strokePool.filter((c) => countHanzi(c.hanzi) > 1).sort(srsSort);
 
         if (selectedListId === 'all_single') {
           pool = singles;
