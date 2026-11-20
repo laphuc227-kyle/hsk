@@ -70,6 +70,47 @@ service cloud.firestore {
           request.resource.data.currentIndex >= 0 &&
           request.resource.data.updatedAt is number;
       }
+
+      // User's daily AI lookup usage
+      match /usage/{usageId} {
+        allow get, list: if isOwner(userId);
+        allow create, update: if isOwner(userId) && isValidId(usageId) &&
+          request.resource.data.userId == userId &&
+          request.resource.data.date is string &&
+          request.resource.data.date.size() <= 20 &&
+          request.resource.data.enrichCount is number &&
+          request.resource.data.enrichCount >= 0 &&
+          request.resource.data.mnemonicCount is number &&
+          request.resource.data.mnemonicCount >= 0;
+      }
+    }
+
+    // Shared community dictionary & mnemonic cache
+    match /sharedDictionary/{entryId} {
+      allow get, list: if isSignedIn();
+      allow create: if isSignedIn() && isValidId(entryId) &&
+        request.resource.data.id == entryId &&
+        request.resource.data.createdBy == request.auth.uid &&
+        request.resource.data.hanzi is string &&
+        request.resource.data.hanzi.size() > 0 &&
+        request.resource.data.hanzi.size() <= 50 &&
+        request.resource.data.pinyin is string &&
+        request.resource.data.pinyin.size() <= 200 &&
+        request.resource.data.meaning is string &&
+        request.resource.data.meaning.size() > 0 &&
+        request.resource.data.meaning.size() <= 500 &&
+        request.resource.data.updatedAt is number;
+      allow update: if isSignedIn() && isValidId(entryId) &&
+        request.resource.data.id == entryId &&
+        request.resource.data.hanzi == resource.data.hanzi &&
+        request.resource.data.hanzi.size() <= 50 &&
+        request.resource.data.pinyin is string &&
+        request.resource.data.pinyin.size() <= 200 &&
+        request.resource.data.meaning is string &&
+        request.resource.data.meaning.size() > 0 &&
+        request.resource.data.meaning.size() <= 500 &&
+        request.resource.data.updatedAt is number;
+      allow delete: if false;
     }
   }
 }

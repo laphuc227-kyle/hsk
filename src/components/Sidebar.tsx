@@ -8,7 +8,6 @@ import {
   BarChart3,
   BookOpen,
   Settings,
-  Bot,
   GraduationCap,
   Layers,
   BookOpenCheck,
@@ -26,6 +25,7 @@ import {
 } from 'lucide-react';
 import { WordList, StudySessionMode, SavedStudySession } from '../types';
 import { getStudyModeLabel, getStudySourceLabel } from '../utils/sessionFormat';
+import { HSK_LIST_IDS } from '../services/hskClassifier';
 
 interface SidebarProps {
   wordLists: WordList[];
@@ -35,7 +35,6 @@ interface SidebarProps {
   savedSessions?: SavedStudySession[];
   onResumeSession?: (session: SavedStudySession) => void;
   onStartSession: (mode: StudySessionMode, listId?: string) => void;
-  onOpenTutor: () => void;
   onOpenAnalytics: () => void;
   onOpenGrammar: () => void;
   onOpenRadicals: () => void;
@@ -58,7 +57,6 @@ export const Sidebar: React.FC<SidebarProps> = ({
   savedSessions = [],
   onResumeSession,
   onStartSession,
-  onOpenTutor,
   onOpenAnalytics,
   onOpenGrammar,
   onOpenRadicals,
@@ -91,7 +89,7 @@ export const Sidebar: React.FC<SidebarProps> = ({
             <h1 className="text-sm font-bold bg-gradient-to-r from-emerald-300 via-teal-200 to-cyan-300 bg-clip-text text-transparent tracking-tight leading-none">
               Hanzi Tutor
             </h1>
-            <span className="text-[10px] text-cyan-400/80 font-mono font-medium">Gia Sư Chữ Hán AI</span>
+            <span className="text-[10px] text-cyan-400/80 font-mono font-medium">Luyện Viết &amp; HSK 1–6</span>
           </div>
         </div>
 
@@ -263,14 +261,6 @@ export const Sidebar: React.FC<SidebarProps> = ({
           </button>
 
           <button
-            onClick={() => handleAction(onOpenTutor)}
-            className="w-full flex items-center gap-2.5 px-2.5 py-2 rounded-xl text-xs font-semibold text-cyan-200 bg-gradient-to-r from-cyan-950/60 to-slate-900 hover:from-cyan-900/80 hover:to-slate-800 border border-cyan-500/30 transition cursor-pointer shadow-xs group"
-          >
-            <Bot className="w-4 h-4 text-cyan-400 group-hover:rotate-12 transition" />
-            <span>Hỏi Gia Sư AI</span>
-          </button>
-
-          <button
             onClick={() => handleAction(onOpenAnalytics)}
             className={`w-full flex items-center gap-2.5 px-2.5 py-2 rounded-xl text-xs font-medium transition cursor-pointer ${
               activeView === 'analytics'
@@ -354,13 +344,13 @@ export const Sidebar: React.FC<SidebarProps> = ({
           </button>
 
           {/* Custom user lists if any */}
-          {wordLists.filter((l) => !['hsk1', 'hsk2', 'hsk3'].includes(l.id) && !l.isPredefined).length > 0 && (
+          {wordLists.filter((l) => !(HSK_LIST_IDS as readonly string[]).includes(l.id) && !l.isPredefined).length > 0 && (
             <div className="pt-2 pb-1 px-2 border-t border-slate-800/60 mt-2">
               <p className="text-[10px] font-bold text-slate-400/80 uppercase tracking-wider">
                 Danh sách tự tạo
               </p>
               {wordLists
-                .filter((l) => !['hsk1', 'hsk2', 'hsk3'].includes(l.id) && !l.isPredefined)
+                .filter((l) => !(HSK_LIST_IDS as readonly string[]).includes(l.id) && !l.isPredefined)
                 .map((list) => {
                   const isSelected = activeView === 'lists' && selectedListId === list.id;
                   return (

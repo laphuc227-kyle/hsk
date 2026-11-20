@@ -83,6 +83,42 @@
         "updatedAt": { "type": "number", "description": "Last update timestamp in milliseconds" }
       },
       "required": ["id", "userId", "mode", "questions", "currentIndex", "updatedAt"]
+    },
+    "SharedDictionaryEntry": {
+      "title": "SharedDictionaryEntry",
+      "description": "Community shared Chinese dictionary entry and AI mnemonic cache",
+      "type": "object",
+      "properties": {
+        "id": { "type": "string", "description": "Encoded ASCII document ID for hanzi" },
+        "hanzi": { "type": "string", "description": "Chinese character or compound word" },
+        "pinyin": { "type": "string", "description": "Tone-marked pinyin" },
+        "hanViet": { "type": "string", "description": "Sino-Vietnamese reading" },
+        "meaning": { "type": "string", "description": "Vietnamese meaning" },
+        "radical": { "type": "string", "description": "Primary radical" },
+        "strokeCount": { "type": "number", "description": "Stroke count" },
+        "components": { "type": "string", "description": "Character decomposition" },
+        "mnemonic": { "type": "string", "description": "Default mnemonic tip" },
+        "aiMnemonics": { "type": "array", "description": "Cached AI mnemonic variants" },
+        "examples": { "type": "array", "description": "Example sentences" },
+        "compoundWords": { "type": "array", "description": "Related compound words" },
+        "source": { "type": "string", "description": "Cache source identifier" },
+        "createdBy": { "type": "string", "description": "UID of contributor" },
+        "updatedAt": { "type": "number", "description": "Update timestamp in milliseconds" }
+      },
+      "required": ["id", "hanzi", "pinyin", "meaning", "updatedAt"]
+    },
+    "DailyAIUsage": {
+      "title": "DailyAIUsage",
+      "description": "Per-user daily AI lookup/mnemonic usage tracking",
+      "type": "object",
+      "properties": {
+        "userId": { "type": "string", "description": "Owner user ID" },
+        "date": { "type": "string", "description": "YYYY-MM-DD date string" },
+        "enrichCount": { "type": "number", "description": "Daily enrich calls used" },
+        "mnemonicCount": { "type": "number", "description": "Daily mnemonic calls used" },
+        "limit": { "type": "number", "description": "Daily quota limit" }
+      },
+      "required": ["userId", "date", "enrichCount", "mnemonicCount"]
     }
   },
   "firestore": {
@@ -105,6 +141,14 @@
     "/users/{userId}/savedSessions/{sessionId}": {
       "schema": "SavedStudySession",
       "description": "In-progress study sessions for cross-device resume"
+    },
+    "/users/{userId}/usage/{usageId}": {
+      "schema": "DailyAIUsage",
+      "description": "Daily AI quota usage tracking for the user"
+    },
+    "/sharedDictionary/{entryId}": {
+      "schema": "SharedDictionaryEntry",
+      "description": "Shared community dictionary and mnemonic cache"
     }
   }
 }

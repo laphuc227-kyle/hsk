@@ -29,7 +29,6 @@ import { speakChinese } from '../services/audio';
 interface RadicalsViewProps {
   characters: Character[];
   onSelectCharacter: (character: Character) => void;
-  onOpenTutor?: (context: string) => void;
   initialRadicalId?: string | null;
   onClearInitialRadical?: () => void;
   sourceCharacter?: Character | null;
@@ -39,7 +38,6 @@ interface RadicalsViewProps {
 export const RadicalsView: React.FC<RadicalsViewProps> = ({
   characters,
   onSelectCharacter,
-  onOpenTutor,
   initialRadicalId,
   onClearInitialRadical,
   sourceCharacter,
@@ -791,20 +789,6 @@ export const RadicalsView: React.FC<RadicalsViewProps> = ({
                       </div>
 
                       <div className="pt-2 border-t border-slate-800 flex items-center justify-end gap-2">
-                        {onOpenTutor && (
-                          <button
-                            type="button"
-                            onClick={() => {
-                              const rad = selectedRadical;
-                              handleCloseDetail();
-                              onOpenTutor(`Bộ ${rad.hanViet} (${rad.variants.length > 0 ? rad.variants[0] : rad.hanzi})`);
-                            }}
-                            className="px-3.5 py-2 bg-gradient-to-r from-cyan-500 to-teal-400 hover:from-cyan-400 hover:to-teal-300 text-slate-950 font-bold text-xs rounded-xl shadow transition flex items-center gap-1.5 cursor-pointer active:scale-95"
-                          >
-                            <Sparkles className="w-3.5 h-3.5 stroke-[2.5]" />
-                            <span>Hỏi Gia Sư AI về bộ này</span>
-                          </button>
-                        )}
                         <button
                           type="button"
                           onClick={handleCloseDetail}
@@ -965,23 +949,16 @@ export const RadicalsView: React.FC<RadicalsViewProps> = ({
                       </div>
                     </div>
 
-                    {/* Footer action: Ask AI Tutor about this radical */}
-                    {onOpenTutor && (
-                      <div className="pt-2 border-t border-slate-800 flex justify-end">
-                        <button
-                          type="button"
-                          onClick={() => {
-                            const rad = selectedRadical;
-                            handleCloseDetail();
-                            onOpenTutor(`Bộ ${rad.hanViet} (${rad.variants.length > 0 ? rad.variants[0] : rad.hanzi})`);
-                          }}
-                          className="px-4 py-2 bg-gradient-to-r from-cyan-500 to-teal-400 hover:from-cyan-400 hover:to-teal-300 text-slate-950 font-bold text-xs rounded-xl shadow transition flex items-center gap-1.5 cursor-pointer active:scale-95"
-                        >
-                          <Sparkles className="w-3.5 h-3.5 stroke-[2.5]" />
-                          <span>Hỏi Gia Sư AI về bộ này</span>
-                        </button>
-                      </div>
-                    )}
+                    {/* Footer action */}
+                    <div className="pt-2 border-t border-slate-800 flex justify-end">
+                      <button
+                        type="button"
+                        onClick={handleCloseDetail}
+                        className="px-4 py-2 text-xs font-medium text-slate-300 hover:text-white bg-slate-800/70 hover:bg-slate-800 rounded-xl transition cursor-pointer"
+                      >
+                        Đóng
+                      </button>
+                    </div>
                   </>
                 )}
               </div>

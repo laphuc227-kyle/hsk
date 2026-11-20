@@ -74,6 +74,12 @@ export interface SRSData {
   difficultyScore: number; // higher = harder
 }
 
+export interface MnemonicVariant {
+  style: string;
+  story: string;
+  breakdown?: string;
+}
+
 export interface Character {
   id: string;
   hanzi: string;
@@ -84,6 +90,8 @@ export interface Character {
   strokeCount: number;
   components?: string;
   mnemonic?: string;
+  aiMnemonics?: MnemonicVariant[];
+  hskLevel?: number;
   customNotes?: string;
   examples?: ExampleSentence[];
   compoundWords?: CompoundWord[];
@@ -91,6 +99,34 @@ export interface Character {
   createdAt: number;
   updatedAt?: number;
   srs: SRSData;
+}
+
+export interface SharedDictionaryEntry {
+  id: string;
+  hanzi: string;
+  pinyin: string;
+  hanViet: string;
+  meaning: string;
+  radical: string;
+  strokeCount: number;
+  components?: string;
+  mnemonic?: string;
+  aiMnemonics?: MnemonicVariant[];
+  hskLevel?: number;
+  examples?: ExampleSentence[];
+  compoundWords?: CompoundWord[];
+  source: 'builtin_hsk' | 'extended_dict' | 'ai_cached';
+  createdBy?: string;
+  updatedAt: number;
+}
+
+export interface DailyAIUsage {
+  userId?: string;
+  date: string;
+  enrichCount: number;
+  mnemonicCount: number;
+  limit: number;
+  updatedAt?: number;
 }
 
 export interface WordList {

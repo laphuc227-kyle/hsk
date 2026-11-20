@@ -6,9 +6,14 @@ import { addCharacter, removeCharacter, saveWordLists, saveCharacters } from '..
 import { DEFAULT_SRS } from '../services/dictionary';
 import { speakChinese } from '../services/audio';
 import { detectCompoundWordsFromCharacters, convertCompoundToCharacter, DetectedCompoundWord } from '../services/compoundWordDetector';
-import { autoCategorizeCharacters } from '../services/hskClassifier';
+import { autoCategorizeCharacters, HSK_LIST_IDS } from '../services/hskClassifier';
 import { lookupBuiltIn } from '../services/builtInDictionary';
-import { getApiUrl, isStaticHost } from '../services/apiClient';
+import { authorizedFetch, isStaticHost } from '../services/apiClient';
+import {
+  lookupSharedDictionaryBatch,
+  saveSharedDictionaryBatch,
+  trackDailyAIUsage,
+} from '../services/firebase';
 import { filterAndRankCharacters, stripAccents, SmartSearchConstituent } from '../services/smartSearch';
 import { findRadicalInfo } from '../services/radicalsDatabase';
 import { getStudyModeLabel, getStudySourceLabel, formatRelativeTimeVi } from '../utils/sessionFormat';
@@ -24,6 +29,8 @@ interface WordListManagerProps {
   onRefreshData: () => void;
   onSelectCharacter: (character: Character) => void;
   onStartSession?: (mode: StudySessionMode, listId?: string) => void;
+  isLoggedIn?: boolean;
+  onRequireSignIn?: () => void;
 }
 
 export const WordListManager: React.FC<WordListManagerProps> = ({
@@ -37,6 +44,8 @@ export const WordListManager: React.FC<WordListManagerProps> = ({
   onRefreshData,
   onSelectCharacter,
   onStartSession,
+  isLoggedIn = false,
+  onRequireSignIn,
 }) => {
   const [searchTerm, setSearchTerm] = useState('');
   const [showAddListModal, setShowAddListModal] = useState(false);
@@ -52,10 +61,11 @@ export const WordListManager: React.FC<WordListManagerProps> = ({
   const [targetListIdForAdd, setTargetListIdForAdd] = useState<string>(
     selectedListId && !['all_single', 'all_compound', 'compound_review', 'compound_expansion'].includes(selectedListId)
       ? selectedListId
-      : (wordLists.find((l) => !['hsk1', 'hsk2', 'hsk3'].includes(l.id))?.id || wordLists[0]?.id || 'default')
+      : (wordLists.find((l) => !(HSK_LIST_IDS as readonly string[]).includes(l.id))?.id || wordLists[0]?.id || 'default')
   );
   const [isProcessingAdd, setIsProcessingAdd] = useState(false);
   const [addStatusMessage, setAddStatusMessage] = useState('');
+  const [addNeedsAuthChars, setAddNeedsAuthChars] = useState<string[]>([]);
 
   // Manual Add Form State
   const [manualHanzi, setManualHanzi] = useState('');
@@ -155,7 +165,7 @@ export const WordListManager: React.FC<WordListManagerProps> = ({
     });
   }, [activeCompoundList, searchTerm]);
 
-  const defaultUserListId = wordLists.find((l) => !['hsk1', 'hsk2', 'hsk3'].includes(l.id))?.id || wordLists[0]?.id || 'default';
+  const defaultUserListId = wordLists.find((l) => !(HSK_LIST_IDS as readonly string[]).includes(l.id))?.id || wordLists[0]?.id || 'default';
 
   const handleSaveDetectedCompound = (dc: DetectedCompoundWord) => {
     const listTarget = selectedListId && !['all_single', 'all_compound', 'compound_review', 'compound_expansion'].includes(selectedListId)
@@ -428,117 +438,176 @@ export const WordListManager: React.FC<WordListManagerProps> = ({
       return;
     }
 
-    setAddStatusMessage(`Đã tìm thấy ${extractedHanzi.length} chữ. Đang bổ sung thông tin chi tiết...`);
+    setAddNeedsAuthChars([]);
+    setAddStatusMessage(`Đã tìm thấy ${extractedHanzi.length} từ. Đang tra cứu từ điển & thư viện chung...`);
 
-    // Fast-path: Check how many characters exist in builtInDictionary
-    const missingInBuiltIn = extractedHanzi.filter((h) => !lookupBuiltIn(h));
+    const resolvedItems = new Map<string, any>();
+    let builtInCount = 0;
+    let sharedCacheCount = 0;
+    let aiCount = 0;
+    let authRequiredFromServer = false;
+    let unresolvedFromServer: string[] = [];
+    let quotaWarningFromServer = '';
 
-    // If all characters exist in built-in dictionary OR running on static host (e.g. GitHub Pages)
-    if (missingInBuiltIn.length === 0 || isStaticHost()) {
-      extractedHanzi.forEach((h) => {
-        const dict = lookupBuiltIn(h);
-        const newChar: Character = {
-          id: `c_${Date.now()}_${Math.random().toString(36).substring(2, 6)}`,
-          hanzi: h,
-          pinyin: dict?.pinyin || 'chưa có phiên âm',
-          hanViet: dict?.hanViet || 'CHƯA RÕ',
-          meaning: dict?.meaning || 'Từ vựng tiếng Trung',
-          radical: dict?.radical || 'Bộ',
-          strokeCount: dict?.strokeCount || 1,
-          components: dict?.components || '',
-          mnemonic: dict?.mnemonic || '',
-          examples: dict?.examples || [],
-          compoundWords: dict?.compoundWords || [],
-          listIds: [targetListIdForAdd],
-          createdAt: Date.now(),
-          srs: { ...DEFAULT_SRS },
-        };
-        addCharacter(newChar);
-      });
+    // Tier 1A: Built-in HSK 1-6 Vietnamese dictionary
+    const missingFromBuiltIn: string[] = [];
+    for (const h of extractedHanzi) {
+      const dict = lookupBuiltIn(h);
+      if (dict) {
+        resolvedItems.set(h, dict);
+        builtInCount++;
+      } else {
+        missingFromBuiltIn.push(h);
+      }
+    }
 
-      setAddStatusMessage(`Thành công! Đã thêm ${extractedHanzi.length} chữ vào danh sách.`);
-      setTimeout(() => {
-        setShowAddWordModal(false);
-        setBatchInputText('');
-        setAddStatusMessage('');
-        onRefreshData();
-      }, 700);
-      setIsProcessingAdd(false);
-      return;
+    // Tier 2A: Shared Firestore community dictionary cache (signed-in users)
+    let remainingForServer = missingFromBuiltIn;
+    if (missingFromBuiltIn.length > 0 && isLoggedIn) {
+      try {
+        const cloudHits = await lookupSharedDictionaryBatch(missingFromBuiltIn);
+        remainingForServer = [];
+        for (const h of missingFromBuiltIn) {
+          const hit = cloudHits.get(h);
+          if (hit) {
+            resolvedItems.set(h, hit);
+            sharedCacheCount++;
+          } else {
+            remainingForServer.push(h);
+          }
+        }
+      } catch (cloudErr) {
+        console.warn('Firestore shared dictionary lookup skipped:', cloudErr);
+      }
+    }
+
+    // Tier 2B (server cache) + Tier 3 (Gemini AI only if signed in)
+    if (remainingForServer.length > 0 && !isStaticHost()) {
+      try {
+        setAddStatusMessage(
+          isLoggedIn
+            ? `Đang tra ${remainingForServer.length} từ mới qua thư viện chung & AI...`
+            : `Đang kiểm tra ${remainingForServer.length} từ trong thư viện cache chung...`
+        );
+        const res = await authorizedFetch('/api/gemini/enrich', {
+          method: 'POST',
+          body: JSON.stringify({ characters: remainingForServer }),
+        });
+        const json = await res.json();
+
+        if (json.authRequired) {
+          authRequiredFromServer = true;
+        }
+        if (json.quotaWarning) {
+          quotaWarningFromServer = json.quotaWarning;
+        }
+        if (Array.isArray(json.unresolvedCharacters)) {
+          unresolvedFromServer = json.unresolvedCharacters;
+        }
+
+        if (json.success && Array.isArray(json.data)) {
+          const aiCreatedEntries: any[] = [];
+          json.data.forEach((item: any) => {
+            if (!item || !item.hanzi || String(item.meaning || '').startsWith('(EN)')) return;
+            resolvedItems.set(item.hanzi, item);
+            const src = json.sources?.[item.hanzi];
+            if (src === 'ai_generated') {
+              aiCount++;
+              aiCreatedEntries.push({ ...item, source: 'ai_cached' });
+            } else if (src === 'shared_cache') {
+              sharedCacheCount++;
+            }
+          });
+
+          if (aiCreatedEntries.length > 0 && isLoggedIn) {
+            saveSharedDictionaryBatch(aiCreatedEntries).catch(console.warn);
+            trackDailyAIUsage('enrich', aiCreatedEntries.length).catch(console.warn);
+          }
+        }
+      } catch (err) {
+        console.warn('Server enrich lookup failed:', err);
+      }
+    } else if (remainingForServer.length > 0 && isStaticHost() && !isLoggedIn) {
+      authRequiredFromServer = true;
+      unresolvedFromServer = remainingForServer;
     }
 
     try {
-      // Call AI Enrich endpoint when running on server with Gemini API
-      const res = await fetch(getApiUrl('/api/gemini/enrich'), {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ characters: extractedHanzi }),
-      });
+      let addedCount = 0;
+      const skippedUnresolved: string[] = [];
 
-      const json = await res.json();
-
-      if (json.success && Array.isArray(json.data)) {
-        json.data.forEach((item: any) => {
-          const dict = lookupBuiltIn(item.hanzi);
-          const newChar: Character = {
-            id: `c_${Date.now()}_${Math.random().toString(36).substring(2, 6)}`,
-            hanzi: item.hanzi,
-            pinyin: item.pinyin && item.pinyin !== 'chưa rõ' ? item.pinyin : (dict?.pinyin || 'chưa rõ'),
-            hanViet: item.hanViet && item.hanViet !== 'CHƯA RÕ' ? item.hanViet : (dict?.hanViet || 'CHƯA RÕ'),
-            meaning: item.meaning && !item.meaning.includes('Từ vựng mới') ? item.meaning : (dict?.meaning || 'Chưa có nghĩa'),
-            radical: item.radical || dict?.radical || 'Bộ thủ',
-            strokeCount: item.strokeCount || dict?.strokeCount || 1,
-            components: item.components || dict?.components,
-            mnemonic: item.mnemonic || dict?.mnemonic,
-            examples: (Array.isArray(item.examples) && item.examples.length > 0) ? item.examples : (dict?.examples || []),
-            compoundWords: (Array.isArray(item.compoundWords) && item.compoundWords.length > 0) ? item.compoundWords : (dict?.compoundWords || []),
-            listIds: [targetListIdForAdd],
-            createdAt: Date.now(),
-            srs: { ...DEFAULT_SRS },
-          };
-          addCharacter(newChar);
-        });
-
-        setAddStatusMessage(`Thành công! Đã thêm ${json.data.length} chữ vào danh sách.`);
-        setTimeout(() => {
-          setShowAddWordModal(false);
-          setBatchInputText('');
-          setAddStatusMessage('');
-          onRefreshData();
-        }, 800);
-      } else {
-        throw new Error('Fallback to local dictionary');
-      }
-    } catch (err) {
-      // Offline / Local dictionary fallback: NEVER use dummy 'pinyin' or 'Từ vựng mới'
       extractedHanzi.forEach((h) => {
+        const item = resolvedItems.get(h);
         const dict = lookupBuiltIn(h);
+        const finalMeaning =
+          item?.meaning && !String(item.meaning).includes('Từ vựng mới') && !String(item.meaning).startsWith('(EN)')
+            ? item.meaning
+            : dict?.meaning;
+
+        if (!finalMeaning) {
+          skippedUnresolved.push(h);
+          return;
+        }
+
         const newChar: Character = {
           id: `c_${Date.now()}_${Math.random().toString(36).substring(2, 6)}`,
           hanzi: h,
-          pinyin: dict?.pinyin || 'chưa có phiên âm',
-          hanViet: dict?.hanViet || 'CHƯA RÕ',
-          meaning: dict?.meaning || 'Từ vựng tiếng Trung',
-          radical: dict?.radical || 'Bộ',
-          strokeCount: dict?.strokeCount || 1,
-          components: dict?.components || '',
-          mnemonic: dict?.mnemonic || '',
-          examples: dict?.examples || [],
-          compoundWords: dict?.compoundWords || [],
+          pinyin: item?.pinyin && item.pinyin !== 'chưa rõ' ? item.pinyin : (dict?.pinyin || 'chưa có phiên âm'),
+          hanViet:
+            item?.hanViet && item.hanViet !== 'CHƯA RÕ' && item.hanViet !== 'TRA CỨU MỞ RỘNG'
+              ? item.hanViet
+              : (dict?.hanViet || 'CHƯA RÕ'),
+          meaning: finalMeaning,
+          radical: item?.radical || dict?.radical || 'Bộ thủ',
+          strokeCount: item?.strokeCount || dict?.strokeCount || Math.max(1, h.length),
+          components: item?.components || dict?.components || '',
+          mnemonic: item?.mnemonic || dict?.mnemonic || '',
+          hskLevel: item?.hskLevel || dict?.hskLevel,
+          aiMnemonics: Array.isArray(item?.aiMnemonics) ? item.aiMnemonics : undefined,
+          examples: (Array.isArray(item?.examples) && item.examples.length > 0) ? item.examples : (dict?.examples || []),
+          compoundWords: (Array.isArray(item?.compoundWords) && item.compoundWords.length > 0) ? item.compoundWords : (dict?.compoundWords || []),
           listIds: [targetListIdForAdd],
           createdAt: Date.now(),
           srs: { ...DEFAULT_SRS },
         };
         addCharacter(newChar);
+        addedCount++;
       });
 
-      setAddStatusMessage(`Đã thêm ${extractedHanzi.length} chữ thành công.`);
+      const unresolvedList = Array.from(new Set([...unresolvedFromServer, ...skippedUnresolved]));
+
+      if (addedCount > 0) {
+        onRefreshData();
+      }
+
+      if (unresolvedList.length > 0) {
+        setAddNeedsAuthChars(authRequiredFromServer || !isLoggedIn ? unresolvedList : []);
+        const addedNote = addedCount > 0 ? `Đã thêm ${addedCount} từ có sẵn trong từ điển/cache. ` : '';
+        if (authRequiredFromServer || !isLoggedIn) {
+          setAddStatusMessage(
+            `${addedNote}${unresolvedList.length} từ (${unresolvedList.join(', ')}) chưa có trong từ điển sẵn. Vui lòng đăng nhập Google để AI tra nghĩa tiếng Việt hoặc tự nhập thủ công.`
+          );
+        } else {
+          setAddStatusMessage(
+            `${addedNote}${quotaWarningFromServer || `Không thể tra AI lúc này cho: ${unresolvedList.join(', ')}. Bạn có thể thử lại hoặc dùng tab Tự nhập thủ công.`}`
+          );
+        }
+        return;
+      }
+
+      const cacheTotal = builtInCount + sharedCacheCount;
+      const summaryParts: string[] = [];
+      if (cacheTotal > 0) summaryParts.push(`${cacheTotal} từ từ từ điển/cache chung`);
+      if (aiCount > 0) summaryParts.push(`${aiCount} từ mới tra AI (đã lưu cache chung)`);
+      const summaryDetail = summaryParts.length > 0 ? ` (${summaryParts.join(', ')})` : '';
+
+      setAddStatusMessage(`Thành công! Đã thêm ${addedCount} từ${summaryDetail}.`);
       setTimeout(() => {
         setShowAddWordModal(false);
         setBatchInputText('');
         setAddStatusMessage('');
-        onRefreshData();
-      }, 800);
+        setAddNeedsAuthChars([]);
+      }, 850);
     } finally {
       setIsProcessingAdd(false);
     }
@@ -1579,7 +1648,7 @@ export const WordListManager: React.FC<WordListManagerProps> = ({
                 }`}
               >
                 <Sparkles className="w-3.5 h-3.5" />
-                <span>AI Tự động tra cứu</span>
+                <span>Tra cứu tự động</span>
               </button>
               <button
                 type="button"
@@ -1604,7 +1673,7 @@ export const WordListManager: React.FC<WordListManagerProps> = ({
                   className="w-full p-2.5 bg-slate-950 text-slate-100 border border-slate-800 rounded-xl focus:outline-hidden focus:border-cyan-500"
                 >
                   {wordLists
-                    .filter((l) => !['hsk1', 'hsk2', 'hsk3'].includes(l.id))
+                    .filter((l) => !(HSK_LIST_IDS as readonly string[]).includes(l.id))
                     .map((l) => (
                       <option key={l.id} value={l.id}>
                         {l.name}
@@ -1620,13 +1689,21 @@ export const WordListManager: React.FC<WordListManagerProps> = ({
                   </label>
                   <textarea
                     value={batchInputText}
-                    onChange={(e) => setBatchInputText(e.target.value)}
-                    placeholder="Dán chữ Hán tùy ý vào đây, ví dụ:&#10;学 喜欢 电脑 老师 工作..."
+                    onChange={(e) => {
+                      setBatchInputText(e.target.value);
+                      if (addNeedsAuthChars.length > 0) {
+                        setAddNeedsAuthChars([]);
+                        setAddStatusMessage('');
+                      }
+                    }}
+                    placeholder="Dán chữ Hán tùy ý vào đây, ví dụ:&#10;学 什么 喜欢 电脑 老师 工作..."
                     rows={4}
                     className="w-full p-3 bg-slate-950 text-slate-100 border border-slate-800 rounded-xl font-serif text-lg focus:outline-hidden focus:border-cyan-500"
                   />
                   <p className="text-[11px] text-slate-400 pt-1">
-                    💡 AI sẽ tự động phân tích Pinyin, Âm Hán Việt, Bộ thủ, Nghĩa Việt, Mẹo nhớ và Ví dụ cho từng chữ (hoạt động mượt mà trên cả GitHub Pages và App).
+                    {isLoggedIn
+                      ? 'Hệ thống tra trước từ điển HSK 1–6 dựng sẵn và thư viện cache chung; chỉ gọi AI khi gặp từ mới chưa có.'
+                      : 'Chưa đăng nhập: hệ thống chỉ tra từ điển HSK 1–6 dựng sẵn & cache chung. Từ mới ngoài từ điển cần đăng nhập Google để gọi AI.'}
                   </p>
                 </div>
               ) : (
@@ -1691,13 +1768,36 @@ export const WordListManager: React.FC<WordListManagerProps> = ({
               )}
 
               {addStatusMessage && (
-                <div className="p-3 bg-slate-950/80 rounded-xl border border-slate-800 text-xs text-slate-200 flex items-center gap-2">
-                  {isProcessingAdd ? (
-                    <Loader2 className="w-4 h-4 text-cyan-400 animate-spin" />
-                  ) : (
-                    <CheckCircle2 className="w-4 h-4 text-emerald-400" />
+                <div className="p-3 bg-slate-950/80 rounded-xl border border-slate-800 text-xs text-slate-200 space-y-2">
+                  <div className="flex items-start gap-2">
+                    {isProcessingAdd ? (
+                      <Loader2 className="w-4 h-4 text-cyan-400 animate-spin shrink-0 mt-0.5" />
+                    ) : (
+                      <CheckCircle2 className={`w-4 h-4 shrink-0 mt-0.5 ${addNeedsAuthChars.length > 0 ? 'text-amber-400' : 'text-emerald-400'}`} />
+                    )}
+                    <span>{addStatusMessage}</span>
+                  </div>
+                  {addNeedsAuthChars.length > 0 && !isLoggedIn && onRequireSignIn && (
+                    <div className="flex flex-wrap items-center gap-2 pt-1">
+                      <button
+                        type="button"
+                        onClick={() => onRequireSignIn()}
+                        className="px-3 py-1.5 text-xs font-bold text-slate-950 bg-cyan-400 hover:bg-cyan-300 rounded-lg transition cursor-pointer"
+                      >
+                        Đăng nhập Google để tra AI
+                      </button>
+                      <button
+                        type="button"
+                        onClick={() => {
+                          setAddMode('manual');
+                          setManualHanzi(addNeedsAuthChars[0] || '');
+                        }}
+                        className="px-3 py-1.5 text-xs font-semibold text-slate-300 bg-slate-800 hover:bg-slate-700 rounded-lg transition cursor-pointer"
+                      >
+                        Tự nhập thủ công
+                      </button>
+                    </div>
                   )}
-                  <span>{addStatusMessage}</span>
                 </div>
               )}
             </div>
@@ -1722,12 +1822,12 @@ export const WordListManager: React.FC<WordListManagerProps> = ({
                   {isProcessingAdd ? (
                     <>
                       <Loader2 className="w-3.5 h-3.5 animate-spin" />
-                      <span>Đang tự động phân tích AI...</span>
+                      <span>Đang tra cứu &amp; lưu từ...</span>
                     </>
                   ) : (
                     <>
                       <Sparkles className="w-3.5 h-3.5 text-slate-950" />
-                      <span>Lưu & Tự bổ sung AI</span>
+                      <span>Lưu &amp; Tra cứu tự động</span>
                     </>
                   )}
                 </button>

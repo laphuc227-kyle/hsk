@@ -26,6 +26,9 @@ import {
   QuizQuestion,
   SavedStudySession,
   SavedSessionResult,
+  SharedDictionaryEntry,
+  MnemonicVariant,
+  DailyAIUsage,
 } from '../types';
 import { DEFAULT_SRS } from './dictionary';
 import { lookupBuiltIn } from './builtInDictionary';
@@ -497,3 +500,219 @@ export async function saveSavedSessionsBatchToCloud(
     handleFirestoreError(err, OperationType.WRITE, path);
   }
 }
+
+// ================= AUTH TOKEN & SHARED DICTIONARY CACHE (TIER 2) =================
+
+export async function getAuthIdToken(): Promise<string | null> {
+  try {
+    if (!auth.currentUser) return null;
+    return await auth.currentUser.getIdToken();
+  } catch {
+    return null;
+  }
+}
+
+export function hanziToCacheDocId(hanzi: string): string {
+  const clean = hanzi.trim();
+  const codes = Array.from(clean).map((ch) => (ch.codePointAt(0) || 0).toString(16));
+  return `u_${codes.join('_')}`.slice(0, 128);
+}
+
+function isUsableMeaning(meaning?: string): boolean {
+  if (!meaning) return false;
+  const trimmed = meaning.trim();
+  return (
+    trimmed.length > 0 &&
+    !trimmed.includes('Từ vựng mới') &&
+    !trimmed.includes('Cần kết nối AI') &&
+    trimmed !== 'Chưa có nghĩa'
+  );
+}
+
+export async function lookupSharedDictionaryOne(
+  hanzi: string
+): Promise<SharedDictionaryEntry | null> {
+  if (!auth.currentUser) return null;
+  const clean = hanzi.trim();
+  if (!clean || clean.length > 50) return null;
+  const docId = hanziToCacheDocId(clean);
+  try {
+    const docRef = doc(db, 'sharedDictionary', docId);
+    const snap = await getDoc(docRef);
+    if (!snap.exists()) return null;
+    const data = snap.data() as SharedDictionaryEntry;
+    if (!data || data.hanzi !== clean) return null;
+    return data;
+  } catch (err) {
+    console.warn('[SharedDictionary] lookup one failed:', err);
+    return null;
+  }
+}
+
+export async function lookupSharedDictionaryBatch(
+  hanziList: string[]
+): Promise<Map<string, SharedDictionaryEntry>> {
+  const result = new Map<string, SharedDictionaryEntry>();
+  if (!auth.currentUser || hanziList.length === 0) return result;
+
+  const unique = Array.from(
+    new Set(hanziList.map((h) => h.trim()).filter((h) => h.length > 0 && h.length <= 50))
+  );
+
+  // Batch concurrent single-doc reads in groups of 20
+  const chunkSize = 20;
+  for (let i = 0; i < unique.length; i += chunkSize) {
+    const chunk = unique.slice(i, i + chunkSize);
+    const docs = await Promise.all(
+      chunk.map(async (word) => {
+        try {
+          const snap = await getDoc(doc(db, 'sharedDictionary', hanziToCacheDocId(word)));
+          if (snap.exists()) {
+            const data = snap.data() as SharedDictionaryEntry;
+            if (data && data.hanzi === word && isUsableMeaning(data.meaning)) {
+              return { word, data };
+            }
+          }
+        } catch {
+          // Non-fatal fallback to server/AI
+        }
+        return null;
+      })
+    );
+    docs.forEach((item) => {
+      if (item) result.set(item.word, item.data);
+    });
+  }
+
+  return result;
+}
+
+export async function saveSharedDictionaryBatch(
+  entries: Array<Partial<SharedDictionaryEntry> & { hanzi: string }>
+): Promise<void> {
+  const uid = auth.currentUser?.uid;
+  if (!uid || entries.length === 0) return;
+
+  for (const entry of entries) {
+    const clean = entry.hanzi?.trim();
+    if (!clean || clean.length > 50 || !isUsableMeaning(entry.meaning)) continue;
+
+    const docId = hanziToCacheDocId(clean);
+    const docRef = doc(db, 'sharedDictionary', docId);
+
+    try {
+      const existingSnap = await getDoc(docRef);
+      const existing = existingSnap.exists()
+        ? (existingSnap.data() as SharedDictionaryEntry)
+        : null;
+
+      const mergedAiMnemonics =
+        Array.isArray(entry.aiMnemonics) && entry.aiMnemonics.length > 0
+          ? entry.aiMnemonics
+          : existing?.aiMnemonics;
+
+      const payload: Record<string, any> = {
+        id: docId,
+        hanzi: clean,
+        pinyin: (
+          (entry.pinyin && entry.pinyin !== 'chưa rõ' ? entry.pinyin : existing?.pinyin) ||
+          ''
+        ).slice(0, 200),
+        hanViet: entry.hanViet && entry.hanViet !== 'CHƯA RÕ'
+          ? entry.hanViet
+          : existing?.hanViet || 'CHƯA RÕ',
+        meaning: (
+          (isUsableMeaning(entry.meaning) ? entry.meaning : existing?.meaning) ||
+          clean
+        ).slice(0, 500),
+        radical: entry.radical || existing?.radical || 'Bộ thủ',
+        strokeCount: Number(entry.strokeCount) || existing?.strokeCount || 1,
+        components: entry.components || existing?.components || '',
+        mnemonic: entry.mnemonic || existing?.mnemonic || '',
+        hskLevel: entry.hskLevel || existing?.hskLevel || null,
+        examples:
+          Array.isArray(entry.examples) && entry.examples.length > 0
+            ? entry.examples
+            : existing?.examples || [],
+        compoundWords:
+          Array.isArray(entry.compoundWords) && entry.compoundWords.length > 0
+            ? entry.compoundWords
+            : existing?.compoundWords || [],
+        aiMnemonics: mergedAiMnemonics || null,
+        source: entry.source || existing?.source || 'ai_cached',
+        createdBy: existing?.createdBy || uid,
+        updatedAt: Date.now(),
+      };
+
+      await setDoc(docRef, sanitizeForFirestore(payload), { merge: true });
+    } catch (err) {
+      console.warn('[SharedDictionary] save entry skipped:', clean, err);
+    }
+  }
+}
+
+export async function saveSharedMnemonicToCache(
+  hanzi: string,
+  baseInfo: {
+    pinyin?: string;
+    hanViet?: string;
+    meaning?: string;
+    radical?: string;
+    strokeCount?: number;
+    components?: string;
+    mnemonic?: string;
+    hskLevel?: number;
+  },
+  aiMnemonics: MnemonicVariant[]
+): Promise<void> {
+  if (!auth.currentUser?.uid || aiMnemonics.length === 0) return;
+  const clean = hanzi.trim();
+  const builtIn = lookupBuiltIn(clean);
+  const effectiveMeaning = isUsableMeaning(baseInfo.meaning)
+    ? baseInfo.meaning!
+    : builtIn?.meaning || clean;
+
+  await saveSharedDictionaryBatch([
+    {
+      hanzi: clean,
+      pinyin: baseInfo.pinyin || builtIn?.pinyin || '',
+      hanViet: baseInfo.hanViet || builtIn?.hanViet || 'CHƯA RÕ',
+      meaning: effectiveMeaning,
+      radical: baseInfo.radical || builtIn?.radical || 'Bộ thủ',
+      strokeCount: baseInfo.strokeCount || builtIn?.strokeCount || 1,
+      components: baseInfo.components || builtIn?.components || '',
+      mnemonic: baseInfo.mnemonic || builtIn?.mnemonic || '',
+      hskLevel: baseInfo.hskLevel || builtIn?.hskLevel,
+      examples: builtIn?.examples || [],
+      compoundWords: builtIn?.compoundWords || [],
+      aiMnemonics,
+      source: builtIn ? 'builtin_hsk' : 'ai_cached',
+    },
+  ]);
+}
+
+export async function trackDailyAIUsage(
+  type: 'enrich' | 'mnemonic',
+  count = 1
+): Promise<void> {
+  const uid = auth.currentUser?.uid;
+  if (!uid || count <= 0) return;
+  const today = new Date().toISOString().split('T')[0];
+  const docRef = doc(db, 'users', uid, 'usage', today);
+  try {
+    const snap = await getDoc(docRef);
+    const prev = snap.exists() ? (snap.data() as DailyAIUsage) : null;
+    const payload: DailyAIUsage = {
+      userId: uid,
+      date: today,
+      enrichCount: (prev?.enrichCount || 0) + (type === 'enrich' ? count : 0),
+      mnemonicCount: (prev?.mnemonicCount || 0) + (type === 'mnemonic' ? count : 0),
+      limit: prev?.limit || 150,
+      updatedAt: Date.now(),
+    };
+    await setDoc(docRef, sanitizeForFirestore(payload), { merge: true });
+  } catch (err) {
+    console.warn('[Usage] trackDailyAIUsage failed:', err);
+  }
+}
+

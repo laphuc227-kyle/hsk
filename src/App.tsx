@@ -9,7 +9,6 @@ import { Sidebar } from './components/Sidebar';
 import { WordListManager } from './components/WordListManager';
 import { StudySession } from './components/StudySession';
 import { CharacterDetailModal } from './components/CharacterDetailModal';
-import { AITutorDrawer } from './components/AITutorDrawer';
 import { AnalyticsView } from './components/AnalyticsView';
 import { GrammarView } from './components/GrammarView';
 import { RadicalsView } from './components/RadicalsView';
@@ -40,6 +39,9 @@ import {
   getSavedStudySessions,
   removeSavedStudySession,
   replaceSavedStudySessions,
+  resetAllData,
+  getStorageOwnerUid,
+  setStorageOwnerUid,
 } from './services/storage';
 import { autoCategorizeCharacters } from './services/hskClassifier';
 import { syncLearnedCompoundWords } from './services/compoundWordDetector';
@@ -90,8 +92,6 @@ export default function App() {
   const [focusedRadicalId, setFocusedRadicalId] = useState<string | null>(null);
   const [sourceCharacterForRadical, setSourceCharacterForRadical] = useState<Character | null>(null);
   const [previousViewBeforeRadical, setPreviousViewBeforeRadical] = useState<'lists' | 'study' | 'analytics' | 'grammar' | 'radicals'>('lists');
-  const [isTutorOpen, setIsTutorOpen] = useState(false);
-  const [tutorContextHanzi, setTutorContextHanzi] = useState<string | undefined>(undefined);
   const [isSettingsOpen, setIsSettingsOpen] = useState(false);
 
   const handleReturnFromRadicalToCharacter = (char: Character) => {
@@ -144,7 +144,34 @@ export default function App() {
       setCurrentUser(user);
       currentUserRef.current = user;
       if (user) {
+        const prevOwner = getStorageOwnerUid();
+        if (prevOwner && prevOwner !== user.uid) {
+          resetAllData();
+          setCharacters(getCharacters());
+          setWordLists(getWordLists());
+          setStats(getUserStats());
+          setSavedSessions([]);
+          setResumedStudySession(null);
+          setSelectedCharacter(null);
+        }
         syncCloudData(user.uid);
+      } else {
+        // If browser previously held a signed-in user's data, wipe it cleanly on sign-out
+        const prevOwner = getStorageOwnerUid();
+        if (prevOwner) {
+          if (cloudSessionTimerRef.current) clearTimeout(cloudSessionTimerRef.current);
+          if (cloudStatsTimerRef.current) clearTimeout(cloudStatsTimerRef.current);
+          pendingCloudSessionRef.current = null;
+          resetAllData();
+          setCharacters(getCharacters());
+          setWordLists(getWordLists());
+          setStats(getUserStats());
+          setSavedSessions([]);
+          setResumedStudySession(null);
+          setSelectedCharacter(null);
+          setSelectedListId(null);
+          setActiveView('lists');
+        }
       }
     });
 
@@ -196,6 +223,7 @@ export default function App() {
 
   const syncCloudData = async (userId: string, silent: boolean = false) => {
     lastAutoSyncAtRef.current = Date.now();
+    setStorageOwnerUid(userId);
     setIsSyncing(true);
     if (!silent) {
       setSyncToast({ message: 'Đang kết nối và đồng bộ dữ liệu đám mây...', type: 'info' });
@@ -447,10 +475,33 @@ export default function App() {
 
   const handleSignOut = async () => {
     try {
+      if (cloudSessionTimerRef.current) {
+        clearTimeout(cloudSessionTimerRef.current);
+        cloudSessionTimerRef.current = null;
+      }
+      if (cloudStatsTimerRef.current) {
+        clearTimeout(cloudStatsTimerRef.current);
+        cloudStatsTimerRef.current = null;
+      }
+      pendingCloudSessionRef.current = null;
+      lastAutoSyncAtRef.current = 0;
+
       await signOutUser();
+      resetAllData();
+
       setCurrentUser(null);
-      setSyncToast({ message: 'Đã đăng xuất tài khoản Google.', type: 'info' });
-      setTimeout(() => setSyncToast(null), 3000);
+      currentUserRef.current = null;
+      setCharacters(getCharacters());
+      setWordLists(getWordLists());
+      setStats(getUserStats());
+      setSavedSessions([]);
+      setResumedStudySession(null);
+      setSelectedCharacter(null);
+      setSelectedListId(null);
+      setActiveView('lists');
+
+      setSyncToast({ message: 'Đã đăng xuất và xóa dữ liệu tài khoản khỏi trình duyệt.', type: 'info' });
+      setTimeout(() => setSyncToast(null), 3500);
     } catch (err) {
       console.error('Sign-out error:', err);
     }
@@ -591,11 +642,6 @@ export default function App() {
     setActiveView('lists');
   };
 
-  const handleOpenTutorForHanzi = (hanzi?: string) => {
-    setTutorContextHanzi(hanzi);
-    setIsTutorOpen(true);
-  };
-
   // Canva-style slide/scale page transition variants
   const pageVariants = {
     initial: { opacity: 0, scale: 0.98, y: 14 },
@@ -633,7 +679,7 @@ export default function App() {
             <h1 className="text-sm font-bold bg-gradient-to-r from-emerald-300 via-teal-200 to-cyan-300 bg-clip-text text-transparent leading-none">
               Hanzi Tutor
             </h1>
-            <span className="text-[10px] text-cyan-400/80 font-mono">Gia Sư Chữ Hán</span>
+            <span className="text-[10px] text-cyan-400/80 font-mono">Luyện Viết &amp; HSK 1–6</span>
           </div>
         </div>
 
@@ -722,7 +768,6 @@ export default function App() {
         activeView={activeView}
         dueCount={dueCount}
         onStartSession={handleStartSession}
-        onOpenTutor={() => handleOpenTutorForHanzi()}
         onOpenAnalytics={() => setActiveView('analytics')}
         onOpenGrammar={() => setActiveView('grammar')}
         onOpenRadicals={() => {
@@ -770,6 +815,8 @@ export default function App() {
                 savedSessions={savedSessions}
                 onResumeSession={handleResumeStudySession}
                 onDeleteSavedSession={handleDeleteSavedSession}
+                isLoggedIn={Boolean(currentUser)}
+                onRequireSignIn={handleSignInGoogle}
               />
             </motion.div>
           )}
@@ -836,12 +883,7 @@ export default function App() {
               transition={pageTransition}
               className="w-full"
             >
-              <GrammarView
-                onOpenTutorWithContext={(promptText) => {
-                  setTutorContextHanzi(promptText);
-                  setIsTutorOpen(true);
-                }}
-              />
+              <GrammarView />
             </motion.div>
           )}
 
@@ -862,7 +904,6 @@ export default function App() {
                 onReturnToCharacter={handleReturnFromRadicalToCharacter}
                 onClearInitialRadical={() => setFocusedRadicalId(null)}
                 onSelectCharacter={(char) => setSelectedCharacter(char)}
-                onOpenTutor={(context) => handleOpenTutorForHanzi(context)}
               />
             </motion.div>
           )}
@@ -878,13 +919,14 @@ export default function App() {
             allCharacters={characters}
             onSelectCharacter={(char) => setSelectedCharacter(char)}
             onClose={() => setSelectedCharacter(null)}
+            isLoggedIn={Boolean(currentUser)}
+            onRequireSignIn={handleSignInGoogle}
             onUpdateCharacter={(updated) => {
               if (updated && selectedCharacter && updated.id === selectedCharacter.id) {
                 setSelectedCharacter(updated);
               }
               refreshAllData();
             }}
-            onOpenTutor={(hanzi) => handleOpenTutorForHanzi(hanzi)}
             onDeleteCharacter={(id) => {
               removeCharacter(id);
               refreshAllData();
@@ -895,17 +937,6 @@ export default function App() {
               setPreviousViewBeforeRadical(activeView);
               setActiveView('radicals');
             }}
-          />
-        )}
-      </AnimatePresence>
-
-      <AnimatePresence>
-        {isTutorOpen && (
-          <AITutorDrawer
-            key="tutor-drawer"
-            isOpen={isTutorOpen}
-            onClose={() => setIsTutorOpen(false)}
-            contextHanzi={tutorContextHanzi}
           />
         )}
       </AnimatePresence>

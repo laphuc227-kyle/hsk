@@ -6,7 +6,14 @@ import { StrokeWriterCanvas } from './StrokeWriterCanvas';
 import { speakChinese } from '../services/audio';
 import { addCharacter, removeCharacter } from '../services/storage';
 import { lookupBuiltIn } from '../services/builtInDictionary';
-import { getApiUrl, isStaticHost } from '../services/apiClient';
+import { authorizedFetch, isStaticHost } from '../services/apiClient';
+import {
+  lookupSharedDictionaryOne,
+  lookupSharedDictionaryBatch,
+  saveSharedDictionaryBatch,
+  saveSharedMnemonicToCache,
+  trackDailyAIUsage,
+} from '../services/firebase';
 import { findRadicalInfo } from '../services/radicalsDatabase';
 import { DEFAULT_SRS } from '../services/dictionary';
 
@@ -27,9 +34,10 @@ interface ConstituentInfo {
 interface CharacterDetailModalProps {
   character: Character | null;
   allCharacters?: Character[];
+  isLoggedIn?: boolean;
+  onRequireSignIn?: () => void;
   onClose: () => void;
   onUpdateCharacter?: (updated?: Character) => void;
-  onOpenTutor?: (hanzi: string) => void;
   onDeleteCharacter?: (id: string) => void;
   onOpenRadicalView?: (radicalId: string, sourceCharacter?: Character) => void;
   onSelectCharacter?: (character: Character) => void;
@@ -38,9 +46,10 @@ interface CharacterDetailModalProps {
 export const CharacterDetailModal: React.FC<CharacterDetailModalProps> = ({
   character: propCharacter,
   allCharacters,
+  isLoggedIn = false,
+  onRequireSignIn,
   onClose,
   onUpdateCharacter,
-  onOpenTutor,
   onDeleteCharacter,
   onOpenRadicalView,
   onSelectCharacter,
@@ -82,10 +91,13 @@ export const CharacterDetailModal: React.FC<CharacterDetailModalProps> = ({
   const [isSavingNotes, setIsSavingNotes] = useState(false);
   const [notesSaved, setNotesSaved] = useState(false);
   const [loadingMnemonic, setLoadingMnemonic] = useState(false);
-  const [aiMnemonics, setAiMnemonics] = useState<any[]>([]);
+  const [aiMnemonics, setAiMnemonics] = useState<any[]>(character.aiMnemonics || []);
+  const [mnemonicNotice, setMnemonicNotice] = useState<string>('');
+  const [mnemonicNeedsAuth, setMnemonicNeedsAuth] = useState(false);
   const [confirmingDelete, setConfirmingDelete] = useState(false);
   const [isRefreshingDetails, setIsRefreshingDetails] = useState(false);
   const [refreshSuccessMessage, setRefreshSuccessMessage] = useState('');
+  const [refreshNeedsAuth, setRefreshNeedsAuth] = useState(false);
 
   // Enriched constituent characters state
   const [enrichedConstituents, setEnrichedConstituents] = useState<Record<string, ConstituentInfo>>({});
@@ -119,7 +131,11 @@ export const CharacterDetailModal: React.FC<CharacterDetailModalProps> = ({
   // Sync state when active character changes
   useEffect(() => {
     setNotes(character.customNotes || '');
-    setAiMnemonics([]);
+    setAiMnemonics(character.aiMnemonics || []);
+    setMnemonicNotice('');
+    setMnemonicNeedsAuth(false);
+    setRefreshSuccessMessage('');
+    setRefreshNeedsAuth(false);
     setConfirmingDelete(false);
     setNotesSaved(false);
   }, [character.id, character.hanzi]);
@@ -199,7 +215,7 @@ export const CharacterDetailModal: React.FC<CharacterDetailModalProps> = ({
     };
   };
 
-  // Auto-enrich any constituent characters lacking complete data
+  // Auto-enrich any constituent characters lacking complete data (Tier 2 shared cache -> Tier 3 AI)
   useEffect(() => {
     if (!character || character.hanzi.length <= 1) return;
 
@@ -220,20 +236,47 @@ export const CharacterDetailModal: React.FC<CharacterDetailModalProps> = ({
     let isMounted = true;
     setEnrichingConstituents(true);
 
-    fetch(getApiUrl('/api/gemini/enrich'), {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ characters: missing }),
-    })
-      .then((res) => res.json())
-      .then((json) => {
-        if (!isMounted) return;
-        if (json.success && Array.isArray(json.data)) {
-          setEnrichedConstituents((prev) => {
-            const next = { ...prev };
+    (async () => {
+      try {
+        // 1. Check shared Firestore dictionary cache first (signed-in users only per Firestore rules)
+        const firestoreCached = isLoggedIn
+          ? await lookupSharedDictionaryBatch(missing)
+          : new Map();
+        const resolvedMap: Record<string, ConstituentInfo> = {};
+        const stillMissing: string[] = [];
+
+        missing.forEach((ch) => {
+          const hit = firestoreCached.get(ch);
+          if (hit && hit.meaning && !hit.meaning.startsWith('(EN)')) {
+            resolvedMap[ch] = {
+              hanzi: hit.hanzi,
+              pinyin: hit.pinyin || '',
+              hanViet: hit.hanViet || '',
+              meaning: hit.meaning,
+              radical: hit.radical,
+              strokeCount: hit.strokeCount,
+              components: hit.components,
+              mnemonic: hit.mnemonic,
+              examples: hit.examples,
+              compoundWords: hit.compoundWords,
+            };
+          } else {
+            stillMissing.push(ch);
+          }
+        });
+
+        // 2. Call server 3-tier enrich (guests only resolve Tier 1/2 cache; logged-in users may invoke Tier 3 AI)
+        if (stillMissing.length > 0 && !isStaticHost()) {
+          const res = await authorizedFetch('/api/gemini/enrich', {
+            method: 'POST',
+            body: JSON.stringify({ characters: stillMissing }),
+          });
+          const json = await res.json();
+          if (json.success && Array.isArray(json.data)) {
+            const aiCreatedEntries: any[] = [];
             json.data.forEach((item: any) => {
-              if (item && item.hanzi) {
-                next[item.hanzi] = {
+              if (item && item.hanzi && item.meaning && !String(item.meaning).startsWith('(EN)')) {
+                resolvedMap[item.hanzi] = {
                   hanzi: item.hanzi,
                   pinyin: item.pinyin || '',
                   hanViet: item.hanViet || '',
@@ -245,23 +288,32 @@ export const CharacterDetailModal: React.FC<CharacterDetailModalProps> = ({
                   examples: item.examples,
                   compoundWords: item.compoundWords,
                 };
+                if (isLoggedIn && json.sources?.[item.hanzi] === 'ai_generated') {
+                  aiCreatedEntries.push({ ...item, source: 'ai_cached' });
+                }
               }
             });
-            return next;
-          });
+            if (isLoggedIn && aiCreatedEntries.length > 0) {
+              saveSharedDictionaryBatch(aiCreatedEntries).catch(console.warn);
+              trackDailyAIUsage('enrich', aiCreatedEntries.length).catch(console.warn);
+            }
+          }
         }
-      })
-      .catch((err) => {
+
+        if (isMounted && Object.keys(resolvedMap).length > 0) {
+          setEnrichedConstituents((prev) => ({ ...prev, ...resolvedMap }));
+        }
+      } catch (err) {
         console.error('Failed to enrich constituent characters:', err);
-      })
-      .finally(() => {
+      } finally {
         if (isMounted) setEnrichingConstituents(false);
-      });
+      }
+    })();
 
     return () => {
       isMounted = false;
     };
-  }, [character.hanzi, allCharacters]);
+  }, [character.hanzi, allCharacters, isLoggedIn]);
 
   const handleSaveConstituent = (info: ConstituentInfo, e: React.MouseEvent) => {
     e.stopPropagation();
@@ -348,18 +400,58 @@ export const CharacterDetailModal: React.FC<CharacterDetailModalProps> = ({
   const handleRefreshDetails = async () => {
     setIsRefreshingDetails(true);
     setRefreshSuccessMessage('');
+    setRefreshNeedsAuth(false);
     try {
-      const dict = lookupBuiltIn(character.hanzi);
-      let enriched: any = dict;
-      if (!enriched) {
-        const res = await fetch(getApiUrl('/api/gemini/enrich'), {
+      // Tier 1: Built-in HSK 1-6 dictionary
+      let enriched: any = lookupBuiltIn(character.hanzi);
+      let resolvedSourceLabel = 'từ điển sẵn có';
+
+      // Tier 2: Firestore shared dictionary cache (signed-in users only)
+      if (!enriched && isLoggedIn) {
+        const cloudCache = await lookupSharedDictionaryOne(character.hanzi);
+        if (
+          cloudCache &&
+          cloudCache.meaning &&
+          !cloudCache.meaning.includes('Từ vựng mới') &&
+          !cloudCache.meaning.startsWith('(EN)')
+        ) {
+          enriched = cloudCache;
+          resolvedSourceLabel = 'thư viện chung';
+        }
+      }
+
+      // Tier 3 (via server 3-tier waterfall: server cache -> Gemini AI for authenticated users)
+      if (!enriched && !isStaticHost()) {
+        const res = await authorizedFetch('/api/gemini/enrich', {
           method: 'POST',
-          headers: { 'Content-Type': 'application/json' },
           body: JSON.stringify({ characters: [character.hanzi] }),
         });
         const json = await res.json();
-        if (json.success && Array.isArray(json.data) && json.data[0]) {
-          enriched = json.data[0];
+        const candidate = json.success && Array.isArray(json.data) ? json.data[0] : null;
+        if (candidate && candidate.meaning && !String(candidate.meaning).startsWith('(EN)')) {
+          enriched = candidate;
+          const src = json.sources?.[character.hanzi];
+          if (src === 'ai_generated') {
+            resolvedSourceLabel = 'AI và đã lưu vào thư viện chung';
+            if (isLoggedIn) {
+              saveSharedDictionaryBatch([{ ...enriched, source: 'ai_cached' }]).catch(console.warn);
+              trackDailyAIUsage('enrich', 1).catch(console.warn);
+            }
+          } else if (src === 'shared_cache') {
+            resolvedSourceLabel = 'thư viện chung';
+          } else {
+            resolvedSourceLabel = 'từ điển sẵn có';
+          }
+        } else if (res.status === 401 || json.authRequired) {
+          setRefreshNeedsAuth(true);
+          setRefreshSuccessMessage(
+            json.quotaWarning ||
+              'Chữ này chưa có trong từ điển sẵn hoặc cache chung. Vui lòng đăng nhập Google để AI tra nghĩa tiếng Việt.'
+          );
+          return;
+        } else if (json.quotaWarning) {
+          setRefreshSuccessMessage(json.quotaWarning);
+          return;
         }
       }
 
@@ -367,19 +459,45 @@ export const CharacterDetailModal: React.FC<CharacterDetailModalProps> = ({
         const updated: Character = {
           ...character,
           pinyin: enriched.pinyin && enriched.pinyin !== 'chưa rõ' ? enriched.pinyin : character.pinyin,
-          hanViet: enriched.hanViet && enriched.hanViet !== 'CHƯA RÕ' ? enriched.hanViet : character.hanViet,
-          meaning: enriched.meaning && !enriched.meaning.includes('Từ vựng mới') ? enriched.meaning : character.meaning,
+          hanViet:
+            enriched.hanViet && enriched.hanViet !== 'CHƯA RÕ' && enriched.hanViet !== 'TRA CỨU MỞ RỘNG'
+              ? enriched.hanViet
+              : character.hanViet,
+          meaning:
+            enriched.meaning &&
+            !enriched.meaning.includes('Từ vựng mới') &&
+            !String(enriched.meaning).startsWith('(EN)')
+              ? enriched.meaning
+              : character.meaning,
           radical: enriched.radical || character.radical,
           strokeCount: enriched.strokeCount || character.strokeCount,
           components: enriched.components || character.components,
           mnemonic: enriched.mnemonic || character.mnemonic,
-          examples: (Array.isArray(enriched.examples) && enriched.examples.length > 0) ? enriched.examples : character.examples,
-          compoundWords: (Array.isArray(enriched.compoundWords) && enriched.compoundWords.length > 0) ? enriched.compoundWords : character.compoundWords,
+          hskLevel: enriched.hskLevel || character.hskLevel,
+          aiMnemonics:
+            Array.isArray(enriched.aiMnemonics) && enriched.aiMnemonics.length > 0
+              ? enriched.aiMnemonics
+              : character.aiMnemonics,
+          examples:
+            Array.isArray(enriched.examples) && enriched.examples.length > 0
+              ? enriched.examples
+              : character.examples,
+          compoundWords:
+            Array.isArray(enriched.compoundWords) && enriched.compoundWords.length > 0
+              ? enriched.compoundWords
+              : character.compoundWords,
         };
+        if (updated.aiMnemonics && updated.aiMnemonics.length > 0) {
+          setAiMnemonics(updated.aiMnemonics);
+        }
+        setActiveCharacter(updated);
         addCharacter(updated);
         if (onUpdateCharacter) onUpdateCharacter(updated);
-        setRefreshSuccessMessage('Đã bổ sung thông tin chi tiết thành công!');
-        setTimeout(() => setRefreshSuccessMessage(''), 2500);
+        setRefreshSuccessMessage(`Đã cập nhật thông tin từ ${resolvedSourceLabel}!`);
+        setTimeout(() => setRefreshSuccessMessage(''), 3000);
+      } else if (!isLoggedIn && isStaticHost()) {
+        setRefreshNeedsAuth(true);
+        setRefreshSuccessMessage('Chữ này chưa có trong từ điển sẵn. Vui lòng đăng nhập Google để sử dụng AI.');
       }
     } catch (e) {
       console.error('Error refreshing character details:', e);
@@ -404,27 +522,44 @@ export const CharacterDetailModal: React.FC<CharacterDetailModalProps> = ({
 
   const handleGenerateMnemonic = async () => {
     setLoadingMnemonic(true);
-
-    if (isStaticHost()) {
-      const dict = lookupBuiltIn(character.hanzi);
-      const mText = character.mnemonic || dict?.mnemonic;
-      if (mText) {
-        setAiMnemonics([
-          {
-            style: 'Mẹo nhớ ghi nhớ chuẩn',
-            story: mText,
-            breakdown: character.components || dict?.components || character.radical,
-          },
-        ]);
-      }
-      setLoadingMnemonic(false);
-      return;
-    }
+    setMnemonicNotice('');
+    setMnemonicNeedsAuth(false);
 
     try {
-      const res = await fetch(getApiUrl('/api/gemini/mnemonic'), {
+      // 1. Check Tier 2 shared Firestore cache first (signed-in users)
+      if (isLoggedIn) {
+        const cloudCached = await lookupSharedDictionaryOne(character.hanzi);
+        if (cloudCached && Array.isArray(cloudCached.aiMnemonics) && cloudCached.aiMnemonics.length > 0) {
+          setAiMnemonics(cloudCached.aiMnemonics);
+          const updated: Character = {
+            ...character,
+            aiMnemonics: cloudCached.aiMnemonics,
+          };
+          addCharacter(updated);
+          if (onUpdateCharacter) onUpdateCharacter(updated);
+          setMnemonicNotice('Đã lấy mẹo nhớ từ thư viện cache chung (không tốn lượt AI).');
+          return;
+        }
+      }
+
+      if (isStaticHost()) {
+        const dict = lookupBuiltIn(character.hanzi);
+        const mText = character.mnemonic || dict?.mnemonic;
+        if (mText) {
+          setAiMnemonics([
+            {
+              style: 'Mẹo nhớ ghi nhớ chuẩn',
+              story: mText,
+              breakdown: character.components || dict?.components || character.radical,
+            },
+          ]);
+        }
+        return;
+      }
+
+      // 2. Call server endpoint (checks server shared cache first for all users, requires login only to invoke Gemini AI)
+      const res = await authorizedFetch('/api/gemini/mnemonic', {
         method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({
           hanzi: character.hanzi,
           meaning: character.meaning,
@@ -433,8 +568,62 @@ export const CharacterDetailModal: React.FC<CharacterDetailModalProps> = ({
         }),
       });
       const json = await res.json();
-      if (json.success && Array.isArray(json.data)) {
+
+      if (res.status === 401 || json.requireAuth) {
+        setMnemonicNeedsAuth(true);
+        setMnemonicNotice(json.error || 'Vui lòng đăng nhập Google để gọi AI tạo mẹo nhớ mới.');
+        const dict = lookupBuiltIn(character.hanzi);
+        const mText = character.mnemonic || dict?.mnemonic;
+        if (mText && aiMnemonics.length === 0) {
+          setAiMnemonics([
+            {
+              style: 'Mẹo nhớ từ điển sẵn có',
+              story: mText,
+              breakdown: character.components || dict?.components || character.radical,
+            },
+          ]);
+        }
+        return;
+      }
+
+      if (res.status === 429 || !json.success) {
+        setMnemonicNotice(json.error || 'Chưa thể tạo thêm mẹo AI lúc này.');
+        const dict = lookupBuiltIn(character.hanzi);
+        const mText = character.mnemonic || dict?.mnemonic;
+        if (mText && aiMnemonics.length === 0) {
+          setAiMnemonics([
+            {
+              style: 'Mẹo nhớ từ điển sẵn có',
+              story: mText,
+              breakdown: character.components || dict?.components || character.radical,
+            },
+          ]);
+        }
+        return;
+      }
+
+      if (Array.isArray(json.data) && json.data.length > 0) {
         setAiMnemonics(json.data);
+        const updated: Character = {
+          ...character,
+          aiMnemonics: json.data,
+        };
+        addCharacter(updated);
+        if (onUpdateCharacter) onUpdateCharacter(updated);
+
+        // Save back into Firestore sharedDictionary so all users can reuse it
+        if (isLoggedIn) {
+          saveSharedMnemonicToCache(character.hanzi, character, json.data).catch(console.warn);
+        }
+
+        if (json.fromCache) {
+          setMnemonicNotice('Đã lấy mẹo nhớ từ cache chung của hệ thống.');
+        } else {
+          if (isLoggedIn) {
+            trackDailyAIUsage('mnemonic', 1).catch(console.warn);
+          }
+          setMnemonicNotice('Đã tạo mẹo AI mới và lưu vào thư viện cache chung!');
+        }
       }
     } catch (e) {
       console.error('Error generating AI Mnemonic:', e);
@@ -610,9 +799,30 @@ export const CharacterDetailModal: React.FC<CharacterDetailModalProps> = ({
           )}
           {/* Notification / Incomplete Banner */}
           {refreshSuccessMessage && (
-            <div className="p-3 bg-emerald-950/60 border border-emerald-500/40 rounded-xl text-xs text-emerald-300 flex items-center gap-2">
-              <Check className="w-4 h-4 text-emerald-400" />
-              <span>{refreshSuccessMessage}</span>
+            <div
+              className={`p-3 rounded-xl text-xs flex flex-wrap items-center justify-between gap-2 border ${
+                refreshNeedsAuth
+                  ? 'bg-amber-950/60 border-amber-500/40 text-amber-200'
+                  : 'bg-emerald-950/60 border-emerald-500/40 text-emerald-300'
+              }`}
+            >
+              <div className="flex items-center gap-2">
+                {refreshNeedsAuth ? (
+                  <Sparkles className="w-4 h-4 text-amber-400 shrink-0" />
+                ) : (
+                  <Check className="w-4 h-4 text-emerald-400 shrink-0" />
+                )}
+                <span>{refreshSuccessMessage}</span>
+              </div>
+              {refreshNeedsAuth && !isLoggedIn && onRequireSignIn && (
+                <button
+                  type="button"
+                  onClick={onRequireSignIn}
+                  className="px-3 py-1 bg-amber-500 hover:bg-amber-400 text-slate-950 font-bold rounded-lg transition cursor-pointer shrink-0"
+                >
+                  Đăng nhập Google
+                </button>
+              )}
             </div>
           )}
 
@@ -975,6 +1185,27 @@ export const CharacterDetailModal: React.FC<CharacterDetailModalProps> = ({
               </div>
             )}
 
+            {mnemonicNotice && (
+              <div
+                className={`p-2.5 rounded-xl border text-[11px] font-medium flex flex-wrap items-center justify-between gap-2 ${
+                  mnemonicNeedsAuth
+                    ? 'bg-amber-950/50 border-amber-500/40 text-amber-200'
+                    : 'bg-cyan-950/30 border-cyan-500/20 text-cyan-300/90'
+                }`}
+              >
+                <span>{mnemonicNotice}</span>
+                {mnemonicNeedsAuth && !isLoggedIn && onRequireSignIn && (
+                  <button
+                    type="button"
+                    onClick={onRequireSignIn}
+                    className="px-2.5 py-1 bg-amber-500 hover:bg-amber-400 text-slate-950 font-bold rounded-lg transition cursor-pointer shrink-0"
+                  >
+                    Đăng nhập Google
+                  </button>
+                )}
+              </div>
+            )}
+
             {aiMnemonics.length > 0 && (
               <div className="space-y-2 pt-1">
                 {aiMnemonics.map((m, idx) => (
@@ -1091,18 +1322,6 @@ export const CharacterDetailModal: React.FC<CharacterDetailModalProps> = ({
           {isCompactLandscape && (
             <div className="pt-3 border-t border-slate-800/80 flex flex-wrap items-center justify-between gap-2 pb-1">
               <div className="flex items-center gap-2">
-                {onOpenTutor && (
-                  <button
-                    onClick={() => {
-                      onClose();
-                      onOpenTutor(character.hanzi);
-                    }}
-                    className="flex items-center gap-1.5 text-xs font-bold text-cyan-300 bg-cyan-950/60 hover:bg-cyan-900/80 px-3 py-2 rounded-xl border border-cyan-500/40 transition cursor-pointer"
-                  >
-                    <Sparkles className="w-3.5 h-3.5 text-cyan-400" />
-                    <span>Hỏi Gia Sư AI về chữ này</span>
-                  </button>
-                )}
 
                 {!confirmingDelete ? (
                   <button
@@ -1157,18 +1376,6 @@ export const CharacterDetailModal: React.FC<CharacterDetailModalProps> = ({
         {!isCompactLandscape && (
           <div className="p-4 border-t border-slate-800 bg-slate-950/60 flex flex-wrap items-center justify-between gap-2">
             <div className="flex items-center gap-2">
-              {onOpenTutor && (
-                <button
-                  onClick={() => {
-                    onClose();
-                    onOpenTutor(character.hanzi);
-                  }}
-                  className="flex items-center gap-1.5 text-xs font-bold text-cyan-300 bg-cyan-950/60 hover:bg-cyan-900/80 px-3 py-2 rounded-xl border border-cyan-500/40 transition cursor-pointer"
-                >
-                  <Sparkles className="w-3.5 h-3.5 text-cyan-400" />
-                  <span>Hỏi Gia Sư AI về chữ này</span>
-                </button>
-              )}
 
               {!confirmingDelete ? (
                 <button

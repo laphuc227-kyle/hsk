@@ -1,3 +1,5 @@
+import { HSK_EXTENDED_DICTIONARY } from './hskDictionaryData';
+
 export interface BuiltInCharInfo {
   hanzi: string;
   pinyin: string;
@@ -5,6 +7,7 @@ export interface BuiltInCharInfo {
   meaning: string;
   radical: string;
   strokeCount: number;
+  hskLevel?: number;
   components?: string;
   mnemonic?: string;
   examples: Array<{ sentence: string; pinyin: string; meaning: string }>;
@@ -1187,11 +1190,17 @@ export const BUILT_IN_DICTIONARY: Record<string, BuiltInCharInfo> = {
 };
 
 /**
- * Helper to look up character or compound word from built-in dictionary
+ * Helper to look up character or compound word from built-in HSK 1-6 dictionary
  */
 export function lookupBuiltIn(hanzi: string): BuiltInCharInfo | null {
-  if (BUILT_IN_DICTIONARY[hanzi]) {
-    return BUILT_IN_DICTIONARY[hanzi];
+  const key = hanzi.trim();
+  if (!key) return null;
+  if (BUILT_IN_DICTIONARY[key]) {
+    return BUILT_IN_DICTIONARY[key];
+  }
+  if (HSK_EXTENDED_DICTIONARY[key]) {
+    return HSK_EXTENDED_DICTIONARY[key];
   }
   return null;
 }
+

@@ -8,7 +8,28 @@ const KEYS = {
   REVIEW_LOGS: 'hanzi_tutor_logs_v2',
   USER_STATS: 'hanzi_tutor_stats_v2',
   SAVED_SESSIONS: 'hanzi_tutor_saved_sessions_v1',
+  OWNER_UID: 'hanzi_tutor_owner_uid_v1',
 };
+
+export function getStorageOwnerUid(): string | null {
+  try {
+    return localStorage.getItem(KEYS.OWNER_UID);
+  } catch {
+    return null;
+  }
+}
+
+export function setStorageOwnerUid(uid: string | null): void {
+  try {
+    if (uid) {
+      localStorage.setItem(KEYS.OWNER_UID, uid);
+    } else {
+      localStorage.removeItem(KEYS.OWNER_UID);
+    }
+  } catch (e) {
+    console.warn('Error updating storage owner UID:', e);
+  }
+}
 
 // Initialize default storage if empty
 export function initializeStorage(): void {
@@ -61,8 +82,10 @@ export function getCharacters(): Character[] {
         healed.meaning === 'Từ vựng mới' ||
         healed.meaning.includes('Từ vựng mới') ||
         healed.meaning.includes('Cần kết nối AI') ||
+        healed.meaning.startsWith('(EN)') ||
         healed.meaning === 'Chưa có nghĩa' ||
         healed.hanViet === 'HÁN VIỆT' ||
+        healed.hanViet === 'TRA CỨU MỞ RỘNG' ||
         healed.hanViet === 'CHƯA RÕ';
 
       if (isPlaceholder) {
@@ -121,7 +144,19 @@ export function saveCharacters(characters: Character[]): void {
 export function getWordLists(): WordList[] {
   try {
     const data = localStorage.getItem(KEYS.WORD_LISTS);
-    return data ? JSON.parse(data) : INITIAL_WORD_LISTS;
+    if (!data) return INITIAL_WORD_LISTS;
+    const parsed: WordList[] = JSON.parse(data);
+    if (!Array.isArray(parsed) || parsed.length === 0) return INITIAL_WORD_LISTS;
+    const existingIds = new Set(parsed.map((l) => l.id));
+    const missingPredefined = INITIAL_WORD_LISTS.filter((pre) => !existingIds.has(pre.id));
+    if (missingPredefined.length > 0) {
+      const merged = [...parsed, ...missingPredefined];
+      try {
+        localStorage.setItem(KEYS.WORD_LISTS, JSON.stringify(merged));
+      } catch {}
+      return merged;
+    }
+    return parsed;
   } catch (e) {
     console.error('Error reading word lists:', e);
     return INITIAL_WORD_LISTS;
@@ -276,6 +311,7 @@ export function resetAllData(): void {
   localStorage.removeItem(KEYS.REVIEW_LOGS);
   localStorage.removeItem(KEYS.USER_STATS);
   localStorage.removeItem(KEYS.SAVED_SESSIONS);
+  localStorage.removeItem(KEYS.OWNER_UID);
   initializeStorage();
 }
 

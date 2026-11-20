@@ -21,6 +21,7 @@ import {
 import { WordList, StudySessionMode, Character, SavedStudySession } from '../types';
 import { detectCompoundWordsFromCharacters } from '../services/compoundWordDetector';
 import { getStudyModeLabel, getStudySourceLabel, formatRelativeTimeVi } from '../utils/sessionFormat';
+import { HSK_LIST_IDS } from '../services/hskClassifier';
 
 interface StudySetupModalProps {
   isOpen: boolean;
@@ -78,7 +79,7 @@ export const StudySetupModal: React.FC<StudySetupModalProps> = ({
     ...detectedCompounds.map((d) => d.word),
   ]).size;
 
-  const customLists = wordLists.filter((l) => !['hsk1', 'hsk2', 'hsk3'].includes(l.id) && !l.isPredefined);
+  const customLists = wordLists.filter((l) => !(HSK_LIST_IDS as readonly string[]).includes(l.id) && !l.isPredefined);
 
   // Helper mode info
   const getModeInfo = (m: StudySessionMode) => {

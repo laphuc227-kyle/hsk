@@ -9,7 +9,6 @@ import {
   CheckCircle2,
   XCircle,
   ArrowRight,
-  Bot,
   Lightbulb,
   Check,
   RotateCcw,
@@ -18,11 +17,7 @@ import { GrammarTopic, GrammarPracticeQuestion } from '../types';
 import { INITIAL_GRAMMAR_TOPICS } from '../data/grammarData';
 import { speakChinese } from '../services/audio';
 
-interface GrammarViewProps {
-  onOpenTutorWithContext?: (context: string) => void;
-}
-
-export const GrammarView: React.FC<GrammarViewProps> = ({ onOpenTutorWithContext }) => {
+export const GrammarView: React.FC = () => {
   const [selectedLevel, setSelectedLevel] = useState<string>('all');
   const [searchQuery, setSearchQuery] = useState<string>('');
   const [activePracticeTopic, setActivePracticeTopic] = useState<GrammarTopic | null>(null);
@@ -131,16 +126,6 @@ export const GrammarView: React.FC<GrammarViewProps> = ({ onOpenTutorWithContext
               Tổng hợp công thức ngữ pháp HSK1 - HSK4, giải thích chi tiết quy tắc sử dụng, ví dụ có âm đọc giọng chuẩn và bài tập luyện tập thực hành.
             </p>
           </div>
-
-          {onOpenTutorWithContext && (
-            <button
-              onClick={() => onOpenTutorWithContext('Tôi muốn học và giải đáp ngữ pháp tiếng Trung HSK')}
-              className="px-4 py-2.5 rounded-xl bg-cyan-950/80 hover:bg-cyan-900 text-cyan-200 border border-cyan-500/40 text-xs font-semibold flex items-center gap-2 cursor-pointer transition shadow-lg shrink-0"
-            >
-              <Bot className="w-4 h-4 text-cyan-400" />
-              <span>Hỏi Gia Sư AI Ngữ Pháp</span>
-            </button>
-          )}
         </div>
       </div>
 
@@ -216,20 +201,6 @@ export const GrammarView: React.FC<GrammarViewProps> = ({ onOpenTutorWithContext
                     >
                       <Sparkles className="w-3.5 h-3.5 stroke-[2.5]" />
                       <span>Luyện tập</span>
-                    </button>
-                  )}
-
-                  {onOpenTutorWithContext && (
-                    <button
-                      onClick={() =>
-                        onOpenTutorWithContext(
-                          `Hãy giải thích chi tiết hơn và cho tôi thêm ví dụ về ngữ pháp: "${topic.title}" (${topic.pattern})`
-                        )
-                      }
-                      className="p-2 rounded-xl bg-slate-800 hover:bg-slate-700 text-cyan-400 border border-cyan-500/30 transition cursor-pointer"
-                      title="Hỏi AI về ngữ pháp này"
-                    >
-                      <Bot className="w-4 h-4" />
                     </button>
                   )}
                 </div>
