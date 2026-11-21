@@ -289,7 +289,10 @@ export function convertCompoundToCharacter(detected: DetectedCompoundWord, listI
  * This ensures that whenever the constituent single characters exist in the user's library,
  * the compound word is automatically available in "Tất cả từ vựng" and all study modes.
  */
-export function syncLearnedCompoundWords(currentCharacters: Character[]): {
+export function syncLearnedCompoundWords(
+  currentCharacters: Character[],
+  excludedHanzi?: Set<string>
+): {
   updatedCharacters: Character[];
   addedCount: number;
 } {
@@ -304,6 +307,7 @@ export function syncLearnedCompoundWords(currentCharacters: Character[]): {
   const newCharacters: Character[] = [];
 
   fullMatchCompounds.forEach((dc) => {
+    if (excludedHanzi?.has(dc.word)) return;
     if (!existingHanziMap.has(dc.word)) {
       // Find list IDs from constituent characters
       const constituentListIds = new Set<string>();

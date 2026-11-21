@@ -27,6 +27,7 @@ interface WordListManagerProps {
   onDeleteSavedSession?: (sessionId: string) => void;
   onSelectList: (listId: string | null) => void;
   onRefreshData: () => void;
+  onDeleteCharacter?: (character: Character) => void | Promise<void>;
   onSelectCharacter: (character: Character) => void;
   onStartSession?: (mode: StudySessionMode, listId?: string) => void;
   isLoggedIn?: boolean;
@@ -42,6 +43,7 @@ export const WordListManager: React.FC<WordListManagerProps> = ({
   onDeleteSavedSession,
   onSelectList,
   onRefreshData,
+  onDeleteCharacter,
   onSelectCharacter,
   onStartSession,
   isLoggedIn = false,
@@ -655,11 +657,15 @@ export const WordListManager: React.FC<WordListManagerProps> = ({
 
   const [deletingChar, setDeletingChar] = useState<Character | null>(null);
 
-  const handleConfirmDelete = () => {
-    if (deletingChar) {
-      removeCharacter(deletingChar.id);
+  const handleConfirmDelete = async () => {
+    if (!deletingChar) return;
+    const target = deletingChar;
+    setDeletingChar(null);
+    if (onDeleteCharacter) {
+      await onDeleteCharacter(target);
+    } else {
+      removeCharacter(target.id, target.hanzi);
       onRefreshData();
-      setDeletingChar(null);
     }
   };
 

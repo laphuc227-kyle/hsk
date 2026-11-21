@@ -42,6 +42,15 @@ import {
   resetAllData,
   getStorageOwnerUid,
   setStorageOwnerUid,
+  getPendingCloudDeletes,
+  addPendingCloudDelete,
+  removePendingCloudDeletes,
+  getCloudSyncSnapshot,
+  saveCloudSyncSnapshot,
+  removeHanziFromCloudSyncSnapshot,
+  getDismissedCompounds,
+  isUntouchedStarterCharacter,
+  isPredefinedWordList,
 } from './services/storage';
 import { autoCategorizeCharacters } from './services/hskClassifier';
 import { syncLearnedCompoundWords } from './services/compoundWordDetector';
@@ -52,6 +61,8 @@ import {
   subscribeToAuth,
   loadCharactersFromCloud,
   saveCharacterToCloud,
+  deleteCharacterFromCloud,
+  deleteCharactersBatchFromCloud,
   saveCharactersBatchToCloud,
   loadWordListsFromCloud,
   saveWordListsToCloud,
@@ -61,6 +72,7 @@ import {
   saveSavedSessionToCloud,
   deleteSavedSessionFromCloud,
   saveSavedSessionsBatchToCloud,
+  resetUserCloudData,
 } from './services/firebase';
 
 export default function App() {
@@ -118,17 +130,51 @@ export default function App() {
   const cloudSessionTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
   const pendingCloudSessionRef = useRef<SavedStudySession | null>(null);
   const cloudStatsTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
+  const toastTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
+
+  const showToast = (
+    message: string,
+    type: 'success' | 'error' | 'info',
+    durationMs: number = 4000
+  ) => {
+    if (toastTimerRef.current) {
+      clearTimeout(toastTimerRef.current);
+      toastTimerRef.current = null;
+    }
+    setSyncToast({ message, type });
+    if (durationMs > 0) {
+      toastTimerRef.current = setTimeout(() => {
+        setSyncToast(null);
+        toastTimerRef.current = null;
+      }, durationMs);
+    }
+  };
 
   const refreshSavedSessions = () => {
     setSavedSessions(getSavedStudySessions());
+  };
+
+  const flushPendingCloudDeletes = async (userId: string): Promise<boolean> => {
+    const pending = getPendingCloudDeletes(userId);
+    if (pending.length === 0) return true;
+    try {
+      await deleteCharactersBatchFromCloud(userId, pending);
+      removePendingCloudDeletes(userId, pending);
+      saveUserStatsToCloud(userId, getUserStats()).catch(console.warn);
+      return true;
+    } catch (err) {
+      console.warn('Could not flush pending cloud deletes yet:', err);
+      return false;
+    }
   };
 
   // Initialize and load data on mount, plus subscribe to Firebase Auth
   useEffect(() => {
     initializeStorage();
     const loadedChars = getCharacters();
-    // Auto-sync 100% learned review compound words into all vocabulary
-    const { updatedCharacters } = syncLearnedCompoundWords(loadedChars);
+    // Auto-sync 100% learned review compound words into all vocabulary (skipping explicitly deleted words)
+    const dismissed = new Set(getDismissedCompounds());
+    const { updatedCharacters } = syncLearnedCompoundWords(loadedChars, dismissed);
     const categorized = autoCategorizeCharacters(updatedCharacters);
     saveCharacters(categorized);
     setCharacters(categorized);
@@ -185,13 +231,31 @@ export default function App() {
         syncCloudData(currentUserRef.current.uid, true);
       }
     };
+
+    const handleOnlineSync = () => {
+      const uid = currentUserRef.current?.uid;
+      if (!uid) return;
+      const hadPending = getPendingCloudDeletes(uid).length > 0;
+      flushPendingCloudDeletes(uid).then((flushed) => {
+        if (hadPending && flushed) {
+          showToast('Đã đồng bộ xóa từ vựng lên Cloud.', 'success', 3000);
+        }
+        if (activeViewRef.current !== 'study') {
+          syncCloudData(uid, true);
+        }
+      });
+    };
+
     document.addEventListener('visibilitychange', handleVisibilityRefresh);
+    window.addEventListener('online', handleOnlineSync);
 
     return () => {
       unsubscribe();
       document.removeEventListener('visibilitychange', handleVisibilityRefresh);
+      window.removeEventListener('online', handleOnlineSync);
       if (cloudSessionTimerRef.current) clearTimeout(cloudSessionTimerRef.current);
       if (cloudStatsTimerRef.current) clearTimeout(cloudStatsTimerRef.current);
+      if (toastTimerRef.current) clearTimeout(toastTimerRef.current);
     };
   }, []);
 
@@ -226,53 +290,111 @@ export default function App() {
     setStorageOwnerUid(userId);
     setIsSyncing(true);
     if (!silent) {
-      setSyncToast({ message: 'Đang kết nối và đồng bộ dữ liệu đám mây...', type: 'info' });
+      showToast('Đang kết nối và đồng bộ dữ liệu đám mây...', 'info', 0);
     }
 
     try {
-      const [cloudChars, cloudLists, cloudStats] = await Promise.all([
+      // Flush any offline/queued deletions before fetching Cloud state so deleted words never resurrect
+      await flushPendingCloudDeletes(userId);
+
+      const remainingPending = getPendingCloudDeletes(userId);
+      const pendingDeleteIds = new Set(remainingPending.map((p) => p.id).filter(Boolean));
+      const pendingDeleteHanzi = new Set(remainingPending.map((p) => p.hanzi).filter(Boolean));
+      const isPendingDeleted = (c: Character) =>
+        pendingDeleteIds.has(c.id) || pendingDeleteHanzi.has(c.hanzi);
+
+      const [rawCloudChars, cloudLists, cloudStats] = await Promise.all([
         loadCharactersFromCloud(userId),
         loadWordListsFromCloud(userId),
         loadUserStatsFromCloud(userId),
       ]);
 
-      const localChars = getCharacters();
+      const cloudChars = rawCloudChars.filter((c) => !isPendingDeleted(c));
+      const localChars = getCharacters().filter((c) => !isPendingDeleted(c));
       const localLists = getWordLists();
       const localStats = getUserStats();
       const localSessions = getSavedStudySessions();
+      const snapshot = getCloudSyncSnapshot(userId);
 
-      // Case 1: Cloud is completely empty -> Upload all local progress (vocab, lists, stats, saved sessions)
-      if (cloudChars.length === 0) {
+      const isCloudCharsListsStatsEmpty =
+        cloudChars.length === 0 && cloudLists.length === 0 && cloudStats === null;
+
+      let handledEmptyCloud = false;
+
+      // Case 1: Cloud has no characters, wordLists, or stats
+      if (isCloudCharsListsStatsEmpty) {
         const cloudSessions = await loadSavedSessionsFromCloud(userId, localChars);
-        const sessionMap = new Map<string, SavedStudySession>();
-        cloudSessions.forEach((s) => sessionMap.set(s.id, s));
-        localSessions.forEach((ls) => {
-          const existing = sessionMap.get(ls.id);
-          if (!existing || (ls.updatedAt || 0) > (existing.updatedAt || 0)) {
-            sessionMap.set(ls.id, ls);
+        if (cloudSessions.length === 0) {
+          handledEmptyCloud = true;
+
+          if (snapshot?.hasSyncedOnce) {
+            // Cloud was reset on another device/browser -> wipe stale local state instead of re-uploading
+            resetAllData();
+            setStorageOwnerUid(userId);
+            saveCloudSyncSnapshot(userId, {
+              hasSyncedOnce: true,
+              charHanzi: [],
+              listIds: [],
+              sessionIds: [],
+              syncedAt: Date.now(),
+            });
+
+            setCharacters(getCharacters());
+            setWordLists(getWordLists());
+            setStats(getUserStats());
+            setSavedSessions([]);
+            setResumedStudySession(null);
+            setSelectedCharacter(null);
+
+            if (!silent) {
+              showToast('Dữ liệu Cloud đã được đặt lại. Đã cập nhật thiết bị về mặc định!', 'info', 4000);
+            }
+          } else {
+            // First-time Cloud backup for a new account
+            const sessionMap = new Map<string, SavedStudySession>();
+            localSessions.forEach((ls) => {
+              const existing = sessionMap.get(ls.id);
+              if (!existing || (ls.updatedAt || 0) > (existing.updatedAt || 0)) {
+                sessionMap.set(ls.id, ls);
+              }
+            });
+            const mergedSessions = replaceSavedStudySessions(Array.from(sessionMap.values()));
+            setSavedSessions(mergedSessions);
+
+            await Promise.all([
+              localChars.length > 0 ? saveCharactersBatchToCloud(userId, localChars) : Promise.resolve(),
+              localLists.length > 0 ? saveWordListsToCloud(userId, localLists) : Promise.resolve(),
+              saveUserStatsToCloud(userId, localStats),
+              mergedSessions.length > 0
+                ? saveSavedSessionsBatchToCloud(userId, mergedSessions)
+                : Promise.resolve(),
+            ]);
+
+            saveCloudSyncSnapshot(userId, {
+              hasSyncedOnce: true,
+              charHanzi: localChars.map((c) => c.hanzi),
+              listIds: localLists.map((l) => l.id),
+              sessionIds: mergedSessions.map((s) => s.id),
+              syncedAt: Date.now(),
+            });
+
+            if (!silent) {
+              showToast(
+                `Đã sao lưu ${localChars.length} từ vựng & tiến độ lên tài khoản Google!`,
+                'success',
+                4000
+              );
+            }
           }
-        });
-        const mergedSessions = replaceSavedStudySessions(Array.from(sessionMap.values()));
-        setSavedSessions(mergedSessions);
-
-        await Promise.all([
-          localChars.length > 0 ? saveCharactersBatchToCloud(userId, localChars) : Promise.resolve(),
-          localLists.length > 0 ? saveWordListsToCloud(userId, localLists) : Promise.resolve(),
-          saveUserStatsToCloud(userId, localStats),
-          mergedSessions.length > 0
-            ? saveSavedSessionsBatchToCloud(userId, mergedSessions)
-            : Promise.resolve(),
-        ]);
-
-        if (!silent) {
-          setSyncToast({
-            message: `Đã sao lưu ${localChars.length} từ vựng & tiến độ lên tài khoản Google!`,
-            type: 'success',
-          });
         }
       }
-      // Case 2: Cloud has data -> Smart two-way merge (newest SRS, stats, and unfinished sessions win)
-      else {
+
+      // Case 2: Cloud already has data -> Smart two-way merge respecting Cloud deletions & resets
+      if (!handledEmptyCloud) {
+        const syncedHanziSet = new Set(snapshot?.charHanzi || []);
+        const syncedListIdSet = new Set(snapshot?.listIds || []);
+        const syncedSessionIdSet = new Set(snapshot?.sessionIds || []);
+
         const cloudByHanzi = new Map<string, Character>();
         cloudChars.forEach((c) => cloudByHanzi.set(c.hanzi, c));
 
@@ -282,6 +404,14 @@ export default function App() {
         localChars.forEach((lc) => {
           const existingCloud = cloudByHanzi.get(lc.hanzi);
           if (!existingCloud) {
+            // Do NOT resurrect words that were previously synced and then deleted on Cloud
+            if (syncedHanziSet.has(lc.hanzi)) {
+              return;
+            }
+            // Do NOT re-upload untouched starter words from a fresh/Incognito browser onto an existing Cloud account
+            if (isUntouchedStarterCharacter(lc)) {
+              return;
+            }
             mergedByHanzi.set(lc.hanzi, lc);
             toUploadChars.push(lc);
           } else {
@@ -296,6 +426,10 @@ export default function App() {
         const mergedChars = autoCategorizeCharacters(Array.from(mergedByHanzi.values()));
         saveCharacters(mergedChars);
         setCharacters(mergedChars);
+        setSelectedCharacter((prev) => {
+          if (!prev) return null;
+          return mergedChars.find((c) => c.id === prev.id || c.hanzi === prev.hanzi) || null;
+        });
 
         // Merge Word Lists
         const listMap = new Map<string, WordList>();
@@ -303,20 +437,26 @@ export default function App() {
         const toUploadLists: WordList[] = [];
         localLists.forEach((ll) => {
           if (!listMap.has(ll.id)) {
+            if (syncedListIdSet.has(ll.id) && !isPredefinedWordList(ll)) {
+              return;
+            }
             listMap.set(ll.id, ll);
-            toUploadLists.push(ll);
+            if (!isPredefinedWordList(ll) || (cloudLists.length === 0 && !snapshot?.hasSyncedOnce)) {
+              toUploadLists.push(ll);
+            }
           }
         });
         const mergedLists = Array.from(listMap.values());
         saveWordLists(mergedLists);
         setWordLists(mergedLists);
 
-        // Merge UserStats (keep higher review counts & study time)
+        // Merge UserStats (recompute saved/mastered from mergedChars so deletions propagate accurately)
         const cloudReviews = cloudStats?.totalReviews || 0;
         const localReviews = localStats.totalReviews || 0;
+        const mergedMastered = mergedChars.filter((c) => c.srs.masteryLevel >= 80).length;
         const mergedStats: UserStats = {
           totalSaved: mergedChars.length,
-          totalMastered: mergedChars.filter((c) => c.srs.masteryLevel >= 80).length,
+          totalMastered: mergedMastered,
           totalReviews: Math.max(cloudReviews, localReviews),
           accuracy:
             cloudReviews >= localReviews
@@ -347,6 +487,9 @@ export default function App() {
         localSessions.forEach((ls) => {
           const existingCloud = sessionMap.get(ls.id);
           if (!existingCloud) {
+            if (syncedSessionIdSet.has(ls.id)) {
+              return;
+            }
             sessionMap.set(ls.id, ls);
             sessionsToUpload.push(ls);
           } else {
@@ -364,42 +507,49 @@ export default function App() {
         const mergedSessions = replaceSavedStudySessions(Array.from(sessionMap.values()));
         setSavedSessions(mergedSessions);
 
-        // Push any local-newer updates back up to Cloud
+        const shouldUploadStats =
+          !cloudStats ||
+          localReviews > cloudReviews ||
+          cloudStats.totalSaved !== mergedStats.totalSaved ||
+          cloudStats.totalMastered !== mergedStats.totalMastered;
+
+        // Push any genuine local-newer updates back up to Cloud
         await Promise.all([
           toUploadChars.length > 0 ? saveCharactersBatchToCloud(userId, toUploadChars) : Promise.resolve(),
           toUploadLists.length > 0 ? saveWordListsToCloud(userId, toUploadLists) : Promise.resolve(),
-          !cloudStats || localReviews > cloudReviews
-            ? saveUserStatsToCloud(userId, mergedStats)
-            : Promise.resolve(),
+          shouldUploadStats ? saveUserStatsToCloud(userId, mergedStats) : Promise.resolve(),
           sessionsToUpload.length > 0
             ? saveSavedSessionsBatchToCloud(userId, sessionsToUpload)
             : Promise.resolve(),
         ]);
+
+        saveCloudSyncSnapshot(userId, {
+          hasSyncedOnce: true,
+          charHanzi: mergedChars.map((c) => c.hanzi),
+          listIds: mergedLists.map((l) => l.id),
+          sessionIds: mergedSessions.map((s) => s.id),
+          syncedAt: Date.now(),
+        });
 
         if (!silent) {
           const draftNote =
             mergedSessions.length > 0
               ? ` • ${mergedSessions.length} bài đang làm dở`
               : '';
-          setSyncToast({
-            message: `Đồng bộ hoàn tất! (${mergedChars.length} từ vựng${draftNote})`,
-            type: 'success',
-          });
+          showToast(
+            `Đồng bộ hoàn tất! (${mergedChars.length} từ vựng${draftNote})`,
+            'success',
+            4000
+          );
         }
       }
     } catch (err: any) {
       console.error('Cloud Sync failed:', err);
       if (!silent) {
-        setSyncToast({
-          message: 'Đồng bộ đám mây thất bại. Vui lòng kiểm tra lại mạng!',
-          type: 'error',
-        });
+        showToast('Đồng bộ đám mây thất bại. Vui lòng kiểm tra lại mạng!', 'error', 4000);
       }
     } finally {
       setIsSyncing(false);
-      if (!silent) {
-        setTimeout(() => setSyncToast(null), 4000);
-      }
     }
   };
 
@@ -486,6 +636,11 @@ export default function App() {
       pendingCloudSessionRef.current = null;
       lastAutoSyncAtRef.current = 0;
 
+      const uid = currentUserRef.current?.uid;
+      if (uid && (typeof navigator === 'undefined' || navigator.onLine !== false)) {
+        await flushPendingCloudDeletes(uid);
+      }
+
       await signOutUser();
       resetAllData();
 
@@ -500,18 +655,25 @@ export default function App() {
       setSelectedListId(null);
       setActiveView('lists');
 
-      setSyncToast({ message: 'Đã đăng xuất và xóa dữ liệu tài khoản khỏi trình duyệt.', type: 'info' });
-      setTimeout(() => setSyncToast(null), 3500);
+      showToast('Đã đăng xuất và xóa dữ liệu tài khoản khỏi trình duyệt.', 'info', 3500);
     } catch (err) {
       console.error('Sign-out error:', err);
     }
   };
 
   const refreshAllData = () => {
+    const uid = currentUserRef.current?.uid;
     const loadedChars = getCharacters();
-    // Auto-sync 100% learned review compound words into all vocabulary
-    const { updatedCharacters } = syncLearnedCompoundWords(loadedChars);
-    const categorized = autoCategorizeCharacters(updatedCharacters);
+    // Auto-sync 100% learned review compound words into all vocabulary (skipping deleted compounds)
+    const dismissed = new Set(getDismissedCompounds());
+    const { updatedCharacters } = syncLearnedCompoundWords(loadedChars, dismissed);
+    let categorized = autoCategorizeCharacters(updatedCharacters);
+    if (uid) {
+      const pending = getPendingCloudDeletes(uid);
+      const pendingIds = new Set(pending.map((p) => p.id).filter(Boolean));
+      const pendingHanzi = new Set(pending.map((p) => p.hanzi).filter(Boolean));
+      categorized = categorized.filter((c) => !pendingIds.has(c.id) && !pendingHanzi.has(c.hanzi));
+    }
     saveCharacters(categorized);
     setCharacters(categorized);
     const lists = getWordLists();
@@ -522,7 +684,6 @@ export default function App() {
     setSavedSessions(latestSessions);
 
     // If logged in, automatically push updates to Cloud
-    const uid = currentUserRef.current?.uid;
     if (uid) {
       saveCharactersBatchToCloud(uid, categorized).catch(console.warn);
       saveWordListsToCloud(uid, lists).catch(console.warn);
@@ -530,7 +691,105 @@ export default function App() {
       if (latestSessions.length > 0) {
         saveSavedSessionsBatchToCloud(uid, latestSessions).catch(console.warn);
       }
+      const existingSnap = getCloudSyncSnapshot(uid);
+      saveCloudSyncSnapshot(uid, {
+        hasSyncedOnce: existingSnap?.hasSyncedOnce ?? true,
+        charHanzi: categorized.map((c) => c.hanzi),
+        listIds: lists.map((l) => l.id),
+        sessionIds: latestSessions.map((s) => s.id),
+        syncedAt: Date.now(),
+      });
     }
+  };
+
+  const handleDeleteCharacter = async (target: Character | string) => {
+    const targetId = typeof target === 'string' ? target : target.id;
+    const resolvedChar =
+      typeof target === 'string'
+        ? characters.find((c) => c.id === target) || getCharacters().find((c) => c.id === target)
+        : target;
+    const targetHanzi = resolvedChar?.hanzi || '';
+
+    // 1. Delete immediately from Local Storage and update React UI state
+    removeCharacter(targetId, targetHanzi || undefined);
+    const remainingChars = getCharacters();
+    const latestStats = getUserStats();
+    setCharacters(remainingChars);
+    setStats(latestStats);
+    if (
+      selectedCharacter &&
+      (selectedCharacter.id === targetId || (targetHanzi && selectedCharacter.hanzi === targetHanzi))
+    ) {
+      setSelectedCharacter(null);
+    }
+
+    // 2. If signed in, record pending delete queue & delete from Cloud Firestore
+    const uid = currentUserRef.current?.uid;
+    if (!uid) return;
+
+    if (targetHanzi) {
+      removeHanziFromCloudSyncSnapshot(uid, targetHanzi);
+    }
+    addPendingCloudDelete(uid, { id: targetId, hanzi: targetHanzi });
+
+    try {
+      await deleteCharacterFromCloud(uid, targetId, targetHanzi || undefined);
+      removePendingCloudDeletes(uid, [{ id: targetId, hanzi: targetHanzi }]);
+      saveUserStatsToCloud(uid, latestStats).catch(console.warn);
+    } catch (err) {
+      console.warn('Cloud delete failed (queued for retry):', err);
+      showToast(
+        'Đã xóa trên máy. Hệ thống sẽ tự động xóa trên Cloud khi có kết nối mạng.',
+        'info',
+        4500
+      );
+    }
+  };
+
+  const handleResetAllData = async () => {
+    if (cloudSessionTimerRef.current) {
+      clearTimeout(cloudSessionTimerRef.current);
+      cloudSessionTimerRef.current = null;
+    }
+    if (cloudStatsTimerRef.current) {
+      clearTimeout(cloudStatsTimerRef.current);
+      cloudStatsTimerRef.current = null;
+    }
+    pendingCloudSessionRef.current = null;
+
+    const uid = currentUserRef.current?.uid;
+    if (uid) {
+      // Must wipe Cloud subcollections BEFORE touching local state so mid-way failures never report success
+      await resetUserCloudData(uid);
+      resetAllData();
+      setStorageOwnerUid(uid);
+      saveCloudSyncSnapshot(uid, {
+        hasSyncedOnce: true,
+        charHanzi: [],
+        listIds: [],
+        sessionIds: [],
+        syncedAt: Date.now(),
+      });
+    } else {
+      resetAllData();
+    }
+
+    setCharacters(getCharacters());
+    setWordLists(getWordLists());
+    setStats(getUserStats());
+    setSavedSessions([]);
+    setResumedStudySession(null);
+    setSelectedCharacter(null);
+    setSelectedListId(null);
+    setActiveView('lists');
+
+    showToast(
+      uid
+        ? 'Đã xóa dữ liệu cá nhân trên thiết bị và Cloud!'
+        : 'Đã đặt lại toàn bộ dữ liệu trên thiết bị!',
+      'success',
+      4000
+    );
   };
 
   // Real-time / debounced Cloud sync handlers during study sessions
@@ -810,6 +1069,7 @@ export default function App() {
                 selectedListId={selectedListId}
                 onSelectList={handleSelectList}
                 onRefreshData={refreshAllData}
+                onDeleteCharacter={handleDeleteCharacter}
                 onSelectCharacter={(char) => setSelectedCharacter(char)}
                 onStartSession={handleStartSession}
                 savedSessions={savedSessions}
@@ -928,8 +1188,7 @@ export default function App() {
               refreshAllData();
             }}
             onDeleteCharacter={(id) => {
-              removeCharacter(id);
-              refreshAllData();
+              handleDeleteCharacter(id);
             }}
             onOpenRadicalView={(radId, sourceChar) => {
               setFocusedRadicalId(radId);
@@ -948,6 +1207,7 @@ export default function App() {
             isOpen={isSettingsOpen}
             onClose={() => setIsSettingsOpen(false)}
             onRefreshData={refreshAllData}
+            onResetAllData={handleResetAllData}
           />
         )}
       </AnimatePresence>

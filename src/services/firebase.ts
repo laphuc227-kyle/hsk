@@ -15,8 +15,11 @@ import {
   getDocFromServer,
   getDocs,
   setDoc,
-  deleteDoc,
   writeBatch,
+  query,
+  where,
+  limit,
+  DocumentReference,
 } from 'firebase/firestore';
 import firebaseConfig from '../../firebase-applet-config.json';
 import {
@@ -163,13 +166,90 @@ export async function saveCharacterToCloud(userId: string, character: Character)
 }
 
 /**
- * Deletes a character from Cloud Firestore
+ * Deletes a character (and any duplicate Cloud docs sharing the same hanzi) from Cloud Firestore
  */
-export async function deleteCharacterFromCloud(userId: string, characterId: string): Promise<void> {
+export async function deleteCharacterFromCloud(
+  userId: string,
+  characterId: string,
+  hanzi?: string
+): Promise<void> {
   const path = `users/${userId}/characters/${characterId}`;
   try {
-    const docRef = doc(db, 'users', userId, 'characters', characterId);
-    await deleteDoc(docRef);
+    const refsToDelete = new Map<string, DocumentReference>();
+    if (characterId) {
+      refsToDelete.set(characterId, doc(db, 'users', userId, 'characters', characterId));
+    }
+    const cleanHanzi = hanzi?.trim();
+    if (cleanHanzi) {
+      const q = query(
+        collection(db, 'users', userId, 'characters'),
+        where('hanzi', '==', cleanHanzi)
+      );
+      const snap = await getDocs(q);
+      snap.forEach((docSnap) => {
+        refsToDelete.set(docSnap.id, docSnap.ref);
+      });
+    }
+
+    const refs = Array.from(refsToDelete.values());
+    if (refs.length === 0) return;
+
+    const chunkSize = 500;
+    for (let i = 0; i < refs.length; i += chunkSize) {
+      const batch = writeBatch(db);
+      refs.slice(i, i + chunkSize).forEach((ref) => batch.delete(ref));
+      await batch.commit();
+    }
+  } catch (err) {
+    handleFirestoreError(err, OperationType.DELETE, path);
+  }
+}
+
+/**
+ * Batch-deletes pending deleted characters (matching either document ID or hanzi) from Cloud Firestore.
+ */
+export async function deleteCharactersBatchFromCloud(
+  userId: string,
+  items: Array<{ id: string; hanzi?: string }>
+): Promise<void> {
+  if (items.length === 0) return;
+  if (items.length === 1) {
+    await deleteCharacterFromCloud(userId, items[0].id, items[0].hanzi);
+    return;
+  }
+
+  const path = `users/${userId}/characters`;
+  try {
+    const targetIds = new Set(items.map((i) => i.id).filter(Boolean));
+    const targetHanzi = new Set(
+      items.map((i) => i.hanzi?.trim()).filter((h): h is string => Boolean(h))
+    );
+
+    const refsToDelete = new Map<string, DocumentReference>();
+    targetIds.forEach((id) => {
+      refsToDelete.set(id, doc(db, 'users', userId, 'characters', id));
+    });
+
+    if (targetHanzi.size > 0) {
+      const snapshot = await getDocs(collection(db, 'users', userId, 'characters'));
+      snapshot.forEach((docSnap) => {
+        const data = docSnap.data() as Partial<Character>;
+        if (
+          targetIds.has(docSnap.id) ||
+          (typeof data?.hanzi === 'string' && targetHanzi.has(data.hanzi.trim()))
+        ) {
+          refsToDelete.set(docSnap.id, docSnap.ref);
+        }
+      });
+    }
+
+    const refs = Array.from(refsToDelete.values());
+    const chunkSize = 500;
+    for (let i = 0; i < refs.length; i += chunkSize) {
+      const batch = writeBatch(db);
+      refs.slice(i, i + chunkSize).forEach((ref) => batch.delete(ref));
+      await batch.commit();
+    }
   } catch (err) {
     handleFirestoreError(err, OperationType.DELETE, path);
   }
@@ -477,9 +557,62 @@ export async function deleteSavedSessionFromCloud(
   const path = `users/${userId}/savedSessions/${sessionId}`;
   try {
     const docRef = doc(db, 'users', userId, 'savedSessions', sessionId);
-    await deleteDoc(docRef);
+    const batch = writeBatch(db);
+    batch.delete(docRef);
+    await batch.commit();
   } catch (err) {
     handleFirestoreError(err, OperationType.DELETE, path);
+  }
+}
+
+const RESET_CLOUD_SUBCOLLECTIONS = ['characters', 'wordLists', 'stats', 'savedSessions'] as const;
+const MAX_WRITE_BATCH_OPS = 500;
+
+async function deleteSubcollectionInBatches(
+  userId: string,
+  subcollectionName: (typeof RESET_CLOUD_SUBCOLLECTIONS)[number]
+): Promise<number> {
+  const colRef = collection(db, 'users', userId, subcollectionName);
+  let totalDeleted = 0;
+
+  while (true) {
+    const snap = await getDocs(query(colRef, limit(MAX_WRITE_BATCH_OPS)));
+    if (snap.empty) break;
+
+    const batch = writeBatch(db);
+    snap.docs.forEach((docSnap) => {
+      batch.delete(docSnap.ref);
+    });
+    await batch.commit();
+    totalDeleted += snap.docs.length;
+
+    if (snap.docs.length < MAX_WRITE_BATCH_OPS) break;
+  }
+
+  return totalDeleted;
+}
+
+/**
+ * Resets personal Cloud Firestore data for the signed-in user ONLY across:
+ * characters, wordLists, stats, savedSessions.
+ * Explicitly NEVER deletes `usage` (AI quota) or `sharedDictionary`.
+ */
+export async function resetUserCloudData(userId: string): Promise<void> {
+  if (!userId) {
+    throw new Error('Không xác định được UID người dùng để đặt lại dữ liệu Cloud.');
+  }
+  if (typeof navigator !== 'undefined' && navigator.onLine === false) {
+    throw new Error('Không có kết nối mạng. Không thể đặt lại dữ liệu trên Cloud lúc này.');
+  }
+
+  let currentSubcollection: string = 'characters';
+  try {
+    for (const subcollectionName of RESET_CLOUD_SUBCOLLECTIONS) {
+      currentSubcollection = subcollectionName;
+      await deleteSubcollectionInBatches(userId, subcollectionName);
+    }
+  } catch (err) {
+    handleFirestoreError(err, OperationType.DELETE, `users/${userId}/${currentSubcollection}`);
   }
 }
 

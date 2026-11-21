@@ -1,23 +1,50 @@
 import React, { useState } from 'react';
 import { motion } from 'motion/react';
-import { Download, Upload, Trash2, X, Check, AlertTriangle, ShieldCheck } from 'lucide-react';
+import { Download, Upload, X, AlertTriangle, ShieldCheck, Loader2 } from 'lucide-react';
 import { exportBackupData, importBackupData, resetAllData } from '../services/storage';
 
 interface SettingsModalProps {
   isOpen: boolean;
   onClose: () => void;
   onRefreshData: () => void;
+  onResetAllData?: () => Promise<void>;
 }
 
 export const SettingsModal: React.FC<SettingsModalProps> = ({
   isOpen,
   onClose,
   onRefreshData,
+  onResetAllData,
 }) => {
-  if (!isOpen) return null;
-
   const [importStatus, setImportStatus] = useState<string | null>(null);
   const [showResetConfirm, setShowResetConfirm] = useState(false);
+  const [isResetting, setIsResetting] = useState(false);
+  const [resetError, setResetError] = useState<string | null>(null);
+
+  if (!isOpen) return null;
+
+  const handleConfirmReset = async () => {
+    if (isResetting) return;
+    setResetError(null);
+    setIsResetting(true);
+    try {
+      if (onResetAllData) {
+        await onResetAllData();
+      } else {
+        resetAllData();
+        onRefreshData();
+      }
+      setShowResetConfirm(false);
+      onClose();
+    } catch (err: any) {
+      setResetError(
+        err?.message ||
+          'Lỗi khi xóa dữ liệu trên Cloud. Vui lòng kiểm tra kết nối mạng và thử lại.'
+      );
+    } finally {
+      setIsResetting(false);
+    }
+  };
 
   const handleExport = () => {
     const jsonStr = exportBackupData();
@@ -54,7 +81,9 @@ export const SettingsModal: React.FC<SettingsModalProps> = ({
       exit={{ opacity: 0 }}
       transition={{ duration: 0.2 }}
       className="fixed inset-0 z-50 flex items-center justify-center p-4 bg-black/70 backdrop-blur-md"
-      onClick={onClose}
+      onClick={() => {
+        if (!isResetting) onClose();
+      }}
     >
       <motion.div
         initial={{ opacity: 0, scale: 0.94, y: 16 }}
@@ -69,7 +98,13 @@ export const SettingsModal: React.FC<SettingsModalProps> = ({
             <ShieldCheck className="w-5 h-5 text-cyan-400" />
             Cài Đặt & Sao Lưu Dữ Liệu
           </h3>
-          <button onClick={onClose} className="p-1 text-slate-400 hover:text-slate-200 rounded-lg cursor-pointer">
+          <button
+            onClick={() => {
+              if (!isResetting) onClose();
+            }}
+            disabled={isResetting}
+            className="p-1 text-slate-400 hover:text-slate-200 rounded-lg cursor-pointer disabled:opacity-50"
+          >
             <X className="w-5 h-5" />
           </button>
         </div>
@@ -86,7 +121,8 @@ export const SettingsModal: React.FC<SettingsModalProps> = ({
             </p>
             <button
               onClick={handleExport}
-              className="px-3.5 py-1.5 font-bold text-slate-950 bg-cyan-400 hover:bg-cyan-300 rounded-xl transition cursor-pointer shadow-md shadow-cyan-500/20"
+              disabled={isResetting}
+              className="px-3.5 py-1.5 font-bold text-slate-950 bg-cyan-400 hover:bg-cyan-300 rounded-xl transition cursor-pointer shadow-md shadow-cyan-500/20 disabled:opacity-50"
             >
               Tải file JSON
             </button>
@@ -105,7 +141,8 @@ export const SettingsModal: React.FC<SettingsModalProps> = ({
               type="file"
               accept=".json"
               onChange={handleImportFile}
-              className="block w-full text-xs text-slate-400 file:mr-2 file:py-1 file:px-2.5 file:rounded-lg file:border-0 file:text-xs file:font-bold file:bg-slate-800 file:text-emerald-300 hover:file:bg-slate-700 cursor-pointer"
+              disabled={isResetting}
+              className="block w-full text-xs text-slate-400 file:mr-2 file:py-1 file:px-2.5 file:rounded-lg file:border-0 file:text-xs file:font-bold file:bg-slate-800 file:text-emerald-300 hover:file:bg-slate-700 cursor-pointer disabled:opacity-50"
             />
             {importStatus && (
               <p className="text-xs text-emerald-400 font-bold pt-1">{importStatus}</p>
@@ -119,30 +156,44 @@ export const SettingsModal: React.FC<SettingsModalProps> = ({
               Đặt lại dữ liệu ban đầu
             </h4>
             <p className="text-rose-200/80">
-              Khôi phục danh sách từ vựng gốc và xóa tiến trình cá nhân.
+              Xóa dữ liệu cá nhân (từ vựng, danh sách, thống kê và bài làm dở) trên thiết bị và Cloud.
             </p>
+            {resetError && (
+              <div className="p-2.5 rounded-lg bg-rose-950/90 border border-rose-500/50 text-rose-200 text-[11px] leading-snug">
+                <span className="font-bold text-rose-300">Chưa thể hoàn tất reset: </span>
+                {resetError}
+              </div>
+            )}
             {!showResetConfirm ? (
               <button
-                onClick={() => setShowResetConfirm(true)}
-                className="px-3.5 py-1.5 font-semibold text-rose-300 bg-rose-950/60 hover:bg-rose-900/80 border border-rose-500/40 rounded-xl transition cursor-pointer"
+                onClick={() => {
+                  setResetError(null);
+                  setShowResetConfirm(true);
+                }}
+                disabled={isResetting}
+                className="px-3.5 py-1.5 font-semibold text-rose-300 bg-rose-950/60 hover:bg-rose-900/80 border border-rose-500/40 rounded-xl transition cursor-pointer disabled:opacity-50"
               >
                 Đặt lại toàn bộ
               </button>
             ) : (
               <div className="flex items-center gap-2 pt-1">
                 <button
-                  onClick={() => {
-                    resetAllData();
-                    onRefreshData();
-                    onClose();
-                  }}
-                  className="px-3.5 py-1.5 font-bold text-white bg-rose-600 hover:bg-rose-500 rounded-xl transition cursor-pointer shadow-md"
+                  onClick={handleConfirmReset}
+                  disabled={isResetting}
+                  className="px-3.5 py-1.5 font-bold text-white bg-rose-600 hover:bg-rose-500 rounded-xl transition cursor-pointer shadow-md flex items-center gap-1.5 disabled:opacity-60"
                 >
-                  Xác nhận reset
+                  {isResetting && <Loader2 className="w-3.5 h-3.5 animate-spin" />}
+                  <span>{isResetting ? 'Đang xóa dữ liệu...' : 'Xác nhận reset'}</span>
                 </button>
                 <button
-                  onClick={() => setShowResetConfirm(false)}
-                  className="px-3 py-1.5 text-slate-400 hover:text-slate-200 text-xs transition cursor-pointer"
+                  onClick={() => {
+                    if (!isResetting) {
+                      setShowResetConfirm(false);
+                      setResetError(null);
+                    }
+                  }}
+                  disabled={isResetting}
+                  className="px-3 py-1.5 text-slate-400 hover:text-slate-200 text-xs transition cursor-pointer disabled:opacity-50"
                 >
                   Hủy
                 </button>
@@ -153,8 +204,11 @@ export const SettingsModal: React.FC<SettingsModalProps> = ({
 
         <div className="flex justify-end pt-2">
           <button
-            onClick={onClose}
-            className="px-4 py-2 text-xs font-semibold text-slate-400 hover:text-slate-100 rounded-xl transition cursor-pointer"
+            onClick={() => {
+              if (!isResetting) onClose();
+            }}
+            disabled={isResetting}
+            className="px-4 py-2 text-xs font-semibold text-slate-400 hover:text-slate-100 rounded-xl transition cursor-pointer disabled:opacity-50"
           >
             Đóng
           </button>
@@ -163,3 +217,4 @@ export const SettingsModal: React.FC<SettingsModalProps> = ({
     </motion.div>
   );
 };
+

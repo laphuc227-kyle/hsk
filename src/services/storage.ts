@@ -9,7 +9,46 @@ const KEYS = {
   USER_STATS: 'hanzi_tutor_stats_v2',
   SAVED_SESSIONS: 'hanzi_tutor_saved_sessions_v1',
   OWNER_UID: 'hanzi_tutor_owner_uid_v1',
+  PENDING_CLOUD_DELETES: 'hanzi_tutor_pending_cloud_deletes_v1',
+  CLOUD_SYNC_SNAPSHOT: 'hanzi_tutor_cloud_sync_snapshot_v1',
+  DISMISSED_COMPOUNDS: 'hanzi_tutor_dismissed_compounds_v1',
 };
+
+export interface PendingCloudDeleteItem {
+  id: string;
+  hanzi: string;
+  deletedAt: number;
+}
+
+export interface CloudSyncSnapshot {
+  hasSyncedOnce: boolean;
+  charHanzi: string[];
+  listIds: string[];
+  sessionIds: string[];
+  syncedAt: number;
+}
+
+const INITIAL_CHAR_BY_ID = new Map(INITIAL_CHARACTERS.map((c) => [c.id, c]));
+const INITIAL_WORD_LIST_IDS = new Set(INITIAL_WORD_LISTS.map((l) => l.id));
+
+export function isUntouchedStarterCharacter(char: Character): boolean {
+  const starter = INITIAL_CHAR_BY_ID.get(char.id);
+  if (!starter) return false;
+  const reviews = (char.srs?.totalCorrect || 0) + (char.srs?.totalIncorrect || 0);
+  return (
+    reviews === 0 &&
+    !char.srs?.lastReviewedAt &&
+    (char.srs?.repetitions || 0) === 0 &&
+    (!char.aiMnemonics || char.aiMnemonics.length === 0) &&
+    (char.customNotes || '') === (starter.customNotes || '') &&
+    char.meaning === starter.meaning &&
+    char.pinyin === starter.pinyin
+  );
+}
+
+export function isPredefinedWordList(list: WordList): boolean {
+  return Boolean(list.isPredefined || INITIAL_WORD_LIST_IDS.has(list.id));
+}
 
 export function getStorageOwnerUid(): string | null {
   try {
@@ -29,6 +68,175 @@ export function setStorageOwnerUid(uid: string | null): void {
   } catch (e) {
     console.warn('Error updating storage owner UID:', e);
   }
+}
+
+function readPendingDeletesMap(): Record<string, PendingCloudDeleteItem[]> {
+  try {
+    const raw = localStorage.getItem(KEYS.PENDING_CLOUD_DELETES);
+    if (!raw) return {};
+    const parsed = JSON.parse(raw);
+    return parsed && typeof parsed === 'object' && !Array.isArray(parsed) ? parsed : {};
+  } catch {
+    return {};
+  }
+}
+
+function writePendingDeletesMap(map: Record<string, PendingCloudDeleteItem[]>): void {
+  try {
+    localStorage.setItem(KEYS.PENDING_CLOUD_DELETES, JSON.stringify(map));
+  } catch (e) {
+    console.warn('Error persisting pending cloud deletes:', e);
+  }
+}
+
+export function getPendingCloudDeletes(uid: string): PendingCloudDeleteItem[] {
+  if (!uid) return [];
+  const map = readPendingDeletesMap();
+  const list = map[uid];
+  return Array.isArray(list) ? list : [];
+}
+
+export function addPendingCloudDelete(
+  uid: string,
+  item: { id: string; hanzi: string }
+): PendingCloudDeleteItem[] {
+  if (!uid || (!item.id && !item.hanzi)) return [];
+  const map = readPendingDeletesMap();
+  const existing = Array.isArray(map[uid]) ? map[uid] : [];
+  const filtered = existing.filter(
+    (entry) => entry.id !== item.id && !(item.hanzi && entry.hanzi === item.hanzi)
+  );
+  const next: PendingCloudDeleteItem[] = [
+    ...filtered,
+    { id: item.id, hanzi: item.hanzi, deletedAt: Date.now() },
+  ];
+  map[uid] = next;
+  writePendingDeletesMap(map);
+  return next;
+}
+
+export function removePendingCloudDeletes(
+  uid: string,
+  items: Array<{ id?: string; hanzi?: string }>
+): void {
+  if (!uid || items.length === 0) return;
+  const map = readPendingDeletesMap();
+  const existing = Array.isArray(map[uid]) ? map[uid] : [];
+  if (existing.length === 0) return;
+
+  const ids = new Set(items.map((i) => i.id).filter(Boolean));
+  const hanziSet = new Set(items.map((i) => i.hanzi).filter(Boolean));
+  const next = existing.filter((entry) => !ids.has(entry.id) && !hanziSet.has(entry.hanzi));
+  if (next.length === 0) {
+    delete map[uid];
+  } else {
+    map[uid] = next;
+  }
+  writePendingDeletesMap(map);
+}
+
+export function clearPendingCloudDeletes(uid?: string): void {
+  if (!uid) {
+    try {
+      localStorage.removeItem(KEYS.PENDING_CLOUD_DELETES);
+    } catch {}
+    return;
+  }
+  const map = readPendingDeletesMap();
+  if (uid in map) {
+    delete map[uid];
+    writePendingDeletesMap(map);
+  }
+}
+
+function readCloudSyncSnapshotMap(): Record<string, CloudSyncSnapshot> {
+  try {
+    const raw = localStorage.getItem(KEYS.CLOUD_SYNC_SNAPSHOT);
+    if (!raw) return {};
+    const parsed = JSON.parse(raw);
+    return parsed && typeof parsed === 'object' && !Array.isArray(parsed) ? parsed : {};
+  } catch {
+    return {};
+  }
+}
+
+function writeCloudSyncSnapshotMap(map: Record<string, CloudSyncSnapshot>): void {
+  try {
+    localStorage.setItem(KEYS.CLOUD_SYNC_SNAPSHOT, JSON.stringify(map));
+  } catch (e) {
+    console.warn('Error saving cloud sync snapshot:', e);
+  }
+}
+
+export function getCloudSyncSnapshot(uid: string): CloudSyncSnapshot | null {
+  if (!uid) return null;
+  const map = readCloudSyncSnapshotMap();
+  return map[uid] || null;
+}
+
+export function saveCloudSyncSnapshot(uid: string, snapshot: CloudSyncSnapshot): void {
+  if (!uid) return;
+  const map = readCloudSyncSnapshotMap();
+  map[uid] = {
+    hasSyncedOnce: Boolean(snapshot.hasSyncedOnce),
+    charHanzi: Array.from(new Set(snapshot.charHanzi || [])),
+    listIds: Array.from(new Set(snapshot.listIds || [])),
+    sessionIds: Array.from(new Set(snapshot.sessionIds || [])),
+    syncedAt: snapshot.syncedAt || Date.now(),
+  };
+  writeCloudSyncSnapshotMap(map);
+}
+
+export function removeHanziFromCloudSyncSnapshot(uid: string, hanzi: string): void {
+  if (!uid || !hanzi) return;
+  const map = readCloudSyncSnapshotMap();
+  const snap = map[uid];
+  if (!snap) return;
+  snap.charHanzi = (snap.charHanzi || []).filter((h) => h !== hanzi);
+  map[uid] = snap;
+  writeCloudSyncSnapshotMap(map);
+}
+
+export function clearCloudSyncSnapshot(uid?: string): void {
+  if (!uid) {
+    try {
+      localStorage.removeItem(KEYS.CLOUD_SYNC_SNAPSHOT);
+    } catch {}
+    return;
+  }
+  const map = readCloudSyncSnapshotMap();
+  if (uid in map) {
+    delete map[uid];
+    writeCloudSyncSnapshotMap(map);
+  }
+}
+
+export function getDismissedCompounds(): string[] {
+  try {
+    const raw = localStorage.getItem(KEYS.DISMISSED_COMPOUNDS);
+    if (!raw) return [];
+    const parsed = JSON.parse(raw);
+    return Array.isArray(parsed) ? parsed.filter((x): x is string => typeof x === 'string') : [];
+  } catch {
+    return [];
+  }
+}
+
+export function addDismissedCompound(hanzi: string): void {
+  if (!hanzi || hanzi.length <= 1) return;
+  try {
+    const current = new Set(getDismissedCompounds());
+    current.add(hanzi);
+    localStorage.setItem(KEYS.DISMISSED_COMPOUNDS, JSON.stringify(Array.from(current)));
+  } catch {}
+}
+
+export function removeDismissedCompound(hanzi: string): void {
+  if (!hanzi) return;
+  try {
+    const next = getDismissedCompounds().filter((h) => h !== hanzi);
+    localStorage.setItem(KEYS.DISMISSED_COMPOUNDS, JSON.stringify(next));
+  } catch {}
 }
 
 // Initialize default storage if empty
@@ -189,11 +397,26 @@ export function addCharacter(character: Character): void {
     chars.unshift(character);
   }
   saveCharacters(chars);
+  removeDismissedCompound(character.hanzi);
+  const ownerUid = getStorageOwnerUid();
+  if (ownerUid) {
+    removePendingCloudDeletes(ownerUid, [{ id: character.id, hanzi: character.hanzi }]);
+  }
 }
 
-export function removeCharacter(characterId: string): void {
-  const chars = getCharacters().filter((c) => c.id !== characterId);
+export function removeCharacter(characterId: string, hanzi?: string): void {
+  const all = getCharacters();
+  const target = all.find((c) => c.id === characterId);
+  const targetHanzi = hanzi || target?.hanzi;
+  const chars = all.filter((c) => {
+    if (c.id === characterId) return false;
+    if (targetHanzi && c.hanzi === targetHanzi) return false;
+    return true;
+  });
   saveCharacters(chars);
+  if (targetHanzi) {
+    addDismissedCompound(targetHanzi);
+  }
 }
 
 export function getReviewLogs(): ReviewLog[] {
@@ -298,6 +521,14 @@ export function importBackupData(jsonString: string): { success: boolean; messag
     localStorage.setItem(KEYS.WORD_LISTS, JSON.stringify(data.wordLists));
     if (data.reviewLogs) localStorage.setItem(KEYS.REVIEW_LOGS, JSON.stringify(data.reviewLogs));
     if (data.userStats) localStorage.setItem(KEYS.USER_STATS, JSON.stringify(data.userStats));
+    localStorage.removeItem(KEYS.DISMISSED_COMPOUNDS);
+    const ownerUid = getStorageOwnerUid();
+    if (ownerUid && Array.isArray(data.characters)) {
+      removePendingCloudDeletes(
+        ownerUid,
+        data.characters.map((c: any) => ({ id: c?.id, hanzi: c?.hanzi }))
+      );
+    }
 
     return { success: true, message: `Đã khôi phục thành công ${data.characters.length} chữ và ${data.wordLists.length} danh sách!` };
   } catch (e: any) {
@@ -312,6 +543,9 @@ export function resetAllData(): void {
   localStorage.removeItem(KEYS.USER_STATS);
   localStorage.removeItem(KEYS.SAVED_SESSIONS);
   localStorage.removeItem(KEYS.OWNER_UID);
+  localStorage.removeItem(KEYS.PENDING_CLOUD_DELETES);
+  localStorage.removeItem(KEYS.CLOUD_SYNC_SNAPSHOT);
+  localStorage.removeItem(KEYS.DISMISSED_COMPOUNDS);
   initializeStorage();
 }
 
