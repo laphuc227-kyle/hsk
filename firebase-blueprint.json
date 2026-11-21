@@ -5,120 +5,150 @@
       "description": "User profile information",
       "type": "object",
       "properties": {
-        "uid": { "type": "string", "description": "User ID" },
-        "email": { "type": "string", "description": "User email address" },
-        "displayName": { "type": "string", "description": "User display name" },
-        "photoURL": { "type": "string", "description": "User avatar URL" },
-        "updatedAt": { "type": "string", "description": "ISO timestamp of last update" }
+        "uid": { "type": "string", "description": "User ID", "maxLength": 128, "pattern": "^[a-zA-Z0-9_\\-]+$" },
+        "email": { "type": "string", "description": "User email address", "maxLength": 320 },
+        "displayName": { "type": "string", "description": "User display name", "maxLength": 200 },
+        "photoURL": { "type": "string", "description": "User avatar URL", "maxLength": 1024 },
+        "updatedAt": { "type": "string", "description": "ISO timestamp of last update", "minLength": 10, "maxLength": 64 }
       },
-      "required": ["uid"]
+      "required": ["uid", "updatedAt"]
     },
     "Character": {
       "title": "Character",
       "description": "A Chinese character or compound word tracked in the user's vocabulary",
       "type": "object",
       "properties": {
-        "id": { "type": "string", "description": "Unique identifier" },
-        "userId": { "type": "string", "description": "Owner user ID" },
-        "hanzi": { "type": "string", "description": "Chinese character or word" },
-        "pinyin": { "type": "string", "description": "Pinyin romanization" },
-        "hanViet": { "type": "string", "description": "Sino-Vietnamese pronunciation" },
-        "meaning": { "type": "string", "description": "Vietnamese meaning" },
-        "mnemonic": { "type": "string", "description": "Memory tip or mnemonic" },
-        "strokeCount": { "type": "number", "description": "Number of strokes" },
-        "radical": { "type": "string", "description": "Radical or classification" },
-        "category": { "type": "string", "description": "Category or list reference" },
+        "id": { "type": "string", "description": "Unique identifier", "maxLength": 128 },
+        "userId": { "type": "string", "description": "Owner user ID", "maxLength": 128, "pattern": "^[a-zA-Z0-9_\\-]+$" },
+        "hanzi": { "type": "string", "description": "Chinese character or word", "minLength": 1, "maxLength": 100 },
+        "pinyin": { "type": "string", "description": "Pinyin romanization", "maxLength": 200 },
+        "hanViet": { "type": "string", "description": "Sino-Vietnamese pronunciation", "maxLength": 200 },
+        "meaning": { "type": "string", "description": "Vietnamese meaning", "maxLength": 1000 },
+        "radical": { "type": "string", "description": "Radical or classification", "maxLength": 100 },
+        "strokeCount": { "type": "number", "description": "Number of strokes (0-200)" },
+        "components": { "type": "string", "description": "Character decomposition", "maxLength": 500 },
+        "mnemonic": { "type": "string", "description": "Memory tip or mnemonic", "maxLength": 2000 },
+        "aiMnemonics": { "type": "array", "description": "Cached AI mnemonic variants (max 10)" },
+        "hskLevel": { "type": "number", "description": "HSK level (0-9)" },
+        "customNotes": { "type": "string", "description": "Personal study notes", "maxLength": 2000 },
+        "examples": { "type": "array", "description": "Example sentences (max 20)" },
+        "compoundWords": { "type": "array", "description": "Related compound words (max 30)" },
+        "listIds": { "type": "array", "description": "List IDs (max 50)" },
         "srs": { "type": "object", "description": "Spaced repetition state" },
-        "updatedAt": { "type": "number", "description": "Timestamp in milliseconds" }
+        "createdAt": { "type": "number", "description": "Creation timestamp in milliseconds" },
+        "updatedAt": { "type": "number", "description": "Update timestamp in milliseconds" }
       },
-      "required": ["id", "userId", "hanzi", "pinyin", "meaning"]
+      "required": ["id", "userId", "hanzi", "pinyin", "hanViet", "meaning", "radical", "strokeCount", "listIds", "createdAt", "updatedAt", "srs"]
     },
     "WordList": {
       "title": "WordList",
       "description": "User custom vocabulary list",
       "type": "object",
       "properties": {
-        "id": { "type": "string", "description": "Unique list identifier" },
-        "userId": { "type": "string", "description": "Owner user ID" },
-        "name": { "type": "string", "description": "List name" },
-        "description": { "type": "string", "description": "List description" },
-        "createdAt": { "type": "number", "description": "Creation timestamp in milliseconds" }
+        "id": { "type": "string", "description": "Unique list identifier", "maxLength": 128, "pattern": "^[a-zA-Z0-9_\\-]+$" },
+        "userId": { "type": "string", "description": "Owner user ID", "maxLength": 128, "pattern": "^[a-zA-Z0-9_\\-]+$" },
+        "name": { "type": "string", "description": "List name", "minLength": 1, "maxLength": 100 },
+        "description": { "type": "string", "description": "List description", "maxLength": 500 },
+        "icon": { "type": "string", "description": "Icon name", "maxLength": 64 },
+        "color": { "type": "string", "description": "Accent color hex", "maxLength": 64 },
+        "isPredefined": { "type": "boolean", "description": "Whether list is predefined" },
+        "createdAt": { "type": "number", "description": "Creation timestamp in milliseconds" },
+        "updatedAt": { "type": "number", "description": "Update timestamp in milliseconds" }
       },
-      "required": ["id", "userId", "name"]
+      "required": ["id", "userId", "name", "createdAt", "updatedAt"]
     },
     "UserStats": {
       "title": "UserStats",
       "description": "User learning statistics and streak",
       "type": "object",
       "properties": {
-        "userId": { "type": "string", "description": "Owner user ID" },
+        "userId": { "type": "string", "description": "Owner user ID", "maxLength": 128, "pattern": "^[a-zA-Z0-9_\\-]+$" },
         "totalSaved": { "type": "number", "description": "Total words saved" },
         "totalMastered": { "type": "number", "description": "Total mastered words" },
         "totalReviews": { "type": "number", "description": "Total reviews completed" },
-        "accuracy": { "type": "number", "description": "Overall accuracy percentage" },
+        "accuracy": { "type": "number", "description": "Overall accuracy percentage (0-100)" },
         "streakDays": { "type": "number", "description": "Learning streak in days" },
-        "lastStudyDate": { "type": "string", "description": "Last study date YYYY-MM-DD" },
+        "lastStudyDate": { "type": "string", "description": "Last study date YYYY-MM-DD", "minLength": 10, "maxLength": 10, "pattern": "^[0-9]{4}-[0-9]{2}-[0-9]{2}$" },
         "totalStudyTimeSeconds": { "type": "number", "description": "Total study time in seconds" },
         "updatedAt": { "type": "number", "description": "Timestamp in milliseconds" }
       },
-      "required": ["userId"]
+      "required": ["userId", "totalSaved", "totalMastered", "totalReviews", "accuracy", "streakDays", "lastStudyDate", "totalStudyTimeSeconds", "updatedAt"]
+    },
+    "ReviewLog": {
+      "title": "ReviewLog",
+      "description": "Individual review event log",
+      "type": "object",
+      "properties": {
+        "id": { "type": "string", "description": "Unique log identifier", "maxLength": 128, "pattern": "^[a-zA-Z0-9_\\-]+$" },
+        "userId": { "type": "string", "description": "Owner user ID", "maxLength": 128, "pattern": "^[a-zA-Z0-9_\\-]+$" },
+        "characterId": { "type": "string", "description": "Reviewed character ID", "maxLength": 128 },
+        "hanzi": { "type": "string", "description": "Reviewed character or word", "minLength": 1, "maxLength": 100 },
+        "questionType": { "type": "string", "description": "Quiz question type", "enum": ["flashcard", "hanzi_to_meaning", "meaning_to_hanzi", "pinyin_to_hanzi", "hanzi_to_pinyin", "audio_to_hanzi", "type_pinyin", "type_hanzi", "matching", "fill_sentence", "reorder_words", "stroke_writing"] },
+        "isCorrect": { "type": "boolean", "description": "Whether the answer was correct" },
+        "timeSpentMs": { "type": "number", "description": "Time spent in milliseconds" },
+        "timestamp": { "type": "number", "description": "Event timestamp in milliseconds" },
+        "updatedAt": { "type": "number", "description": "Optional update timestamp in milliseconds" }
+      },
+      "required": ["id", "userId", "characterId", "hanzi", "questionType", "isCorrect", "timeSpentMs", "timestamp"]
     },
     "SavedStudySession": {
       "title": "SavedStudySession",
       "description": "In-progress study session saved for cross-device resume",
       "type": "object",
       "properties": {
-        "id": { "type": "string", "description": "Unique session identifier" },
-        "userId": { "type": "string", "description": "Owner user ID" },
-        "mode": { "type": "string", "description": "Study session mode" },
-        "selectedListId": { "type": "string", "description": "Selected list ID or null" },
+        "id": { "type": "string", "description": "Unique session identifier", "maxLength": 128, "pattern": "^[a-zA-Z0-9_\\-]+$" },
+        "userId": { "type": "string", "description": "Owner user ID", "maxLength": 128, "pattern": "^[a-zA-Z0-9_\\-]+$" },
+        "mode": { "type": "string", "description": "Study session mode", "enum": ["smart_daily", "quick_flashcard", "stroke_writing", "weakness", "random_test", "sentence_cloze", "compound_words", "compound_expansion", "custom_list"] },
+        "selectedListId": { "type": "string", "description": "Selected list ID or null", "maxLength": 128 },
         "questionLimit": { "type": "string", "description": "Question limit count or 'all'" },
-        "questions": { "type": "array", "description": "Compact serialized quiz questions" },
+        "questions": { "type": "array", "description": "Compact serialized quiz questions (1-2000)" },
         "currentIndex": { "type": "number", "description": "Current question index" },
         "correctCount": { "type": "number", "description": "Correct answers so far" },
         "incorrectCount": { "type": "number", "description": "Incorrect answers so far" },
-        "sessionResults": { "type": "array", "description": "Compact serialized session results" },
+        "sessionResults": { "type": "array", "description": "Compact serialized session results (max 5000)" },
         "elapsedMs": { "type": "number", "description": "Elapsed study duration in milliseconds" },
         "createdAt": { "type": "number", "description": "Creation timestamp in milliseconds" },
         "updatedAt": { "type": "number", "description": "Last update timestamp in milliseconds" }
       },
-      "required": ["id", "userId", "mode", "questions", "currentIndex", "updatedAt"]
+      "required": ["id", "userId", "mode", "questionLimit", "questions", "currentIndex", "correctCount", "incorrectCount", "sessionResults", "elapsedMs", "createdAt", "updatedAt"]
     },
     "SharedDictionaryEntry": {
       "title": "SharedDictionaryEntry",
       "description": "Community shared Chinese dictionary entry and AI mnemonic cache",
       "type": "object",
       "properties": {
-        "id": { "type": "string", "description": "Encoded ASCII document ID for hanzi" },
-        "hanzi": { "type": "string", "description": "Chinese character or compound word" },
-        "pinyin": { "type": "string", "description": "Tone-marked pinyin" },
-        "hanViet": { "type": "string", "description": "Sino-Vietnamese reading" },
-        "meaning": { "type": "string", "description": "Vietnamese meaning" },
-        "radical": { "type": "string", "description": "Primary radical" },
-        "strokeCount": { "type": "number", "description": "Stroke count" },
-        "components": { "type": "string", "description": "Character decomposition" },
-        "mnemonic": { "type": "string", "description": "Default mnemonic tip" },
-        "aiMnemonics": { "type": "array", "description": "Cached AI mnemonic variants" },
-        "examples": { "type": "array", "description": "Example sentences" },
-        "compoundWords": { "type": "array", "description": "Related compound words" },
-        "source": { "type": "string", "description": "Cache source identifier" },
-        "createdBy": { "type": "string", "description": "UID of contributor" },
+        "id": { "type": "string", "description": "Encoded hex Unicode document ID for hanzi", "minLength": 3, "maxLength": 128, "pattern": "^u_[0-9a-f_]+$" },
+        "hanzi": { "type": "string", "description": "Chinese character or compound word", "minLength": 1, "maxLength": 50 },
+        "pinyin": { "type": "string", "description": "Tone-marked pinyin", "maxLength": 200 },
+        "hanViet": { "type": "string", "description": "Sino-Vietnamese reading", "maxLength": 200 },
+        "meaning": { "type": "string", "description": "Vietnamese meaning", "minLength": 1, "maxLength": 500 },
+        "radical": { "type": "string", "description": "Primary radical", "minLength": 1, "maxLength": 100 },
+        "strokeCount": { "type": "number", "description": "Stroke count (1-200)" },
+        "components": { "type": "string", "description": "Character decomposition", "maxLength": 500 },
+        "mnemonic": { "type": "string", "description": "Default mnemonic tip", "maxLength": 2000 },
+        "aiMnemonics": { "type": "array", "description": "Cached AI mnemonic variants (max 10)" },
+        "hskLevel": { "type": "number", "description": "HSK level (0-9)" },
+        "examples": { "type": "array", "description": "Example sentences (max 20)" },
+        "compoundWords": { "type": "array", "description": "Related compound words (max 30)" },
+        "source": { "type": "string", "description": "Cache source identifier", "enum": ["builtin_hsk", "extended_dict", "ai_cached"] },
+        "createdBy": { "type": "string", "description": "UID of contributor", "maxLength": 128, "pattern": "^[a-zA-Z0-9_\\-]+$" },
         "updatedAt": { "type": "number", "description": "Update timestamp in milliseconds" }
       },
-      "required": ["id", "hanzi", "pinyin", "meaning", "updatedAt"]
+      "required": ["id", "hanzi", "pinyin", "hanViet", "meaning", "radical", "strokeCount", "source", "createdBy", "updatedAt"]
     },
     "DailyAIUsage": {
       "title": "DailyAIUsage",
       "description": "Per-user daily AI lookup/mnemonic usage tracking",
       "type": "object",
       "properties": {
-        "userId": { "type": "string", "description": "Owner user ID" },
-        "date": { "type": "string", "description": "YYYY-MM-DD date string" },
+        "userId": { "type": "string", "description": "Owner user ID", "maxLength": 128, "pattern": "^[a-zA-Z0-9_\\-]+$" },
+        "date": { "type": "string", "description": "YYYY-MM-DD date string", "minLength": 10, "maxLength": 10, "pattern": "^[0-9]{4}-[0-9]{2}-[0-9]{2}$" },
         "enrichCount": { "type": "number", "description": "Daily enrich calls used" },
         "mnemonicCount": { "type": "number", "description": "Daily mnemonic calls used" },
-        "limit": { "type": "number", "description": "Daily quota limit" }
+        "limit": { "type": "number", "description": "Daily quota limit" },
+        "updatedAt": { "type": "number", "description": "Update timestamp in milliseconds" }
       },
-      "required": ["userId", "date", "enrichCount", "mnemonicCount"]
+      "required": ["userId", "date", "enrichCount", "mnemonicCount", "limit", "updatedAt"]
     }
   },
   "firestore": {
@@ -134,9 +164,13 @@
       "schema": "WordList",
       "description": "Custom word lists belonging to the user"
     },
-    "/users/{userId}/stats/main": {
+    "/users/{userId}/stats/{statId}": {
       "schema": "UserStats",
-      "description": "Learning stats and streak for the user"
+      "description": "Learning stats and streak for the user (doc ID 'main')"
+    },
+    "/users/{userId}/reviewLogs/{logId}": {
+      "schema": "ReviewLog",
+      "description": "Individual review logs belonging to the user"
     },
     "/users/{userId}/savedSessions/{sessionId}": {
       "schema": "SavedStudySession",
@@ -144,7 +178,7 @@
     },
     "/users/{userId}/usage/{usageId}": {
       "schema": "DailyAIUsage",
-      "description": "Daily AI quota usage tracking for the user"
+      "description": "Daily AI quota usage tracking for the user (doc ID YYYY-MM-DD)"
     },
     "/sharedDictionary/{entryId}": {
       "schema": "SharedDictionaryEntry",

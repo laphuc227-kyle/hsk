@@ -1,115 +1,462 @@
 rules_version = '2';
 service cloud.firestore {
   match /databases/{database}/documents {
-    // Default deny all
+    // Global default deny
     match /{document=**} {
       allow read, write: if false;
     }
 
-    // Helper functions
+    // ==================== GLOBAL HELPERS ====================
     function isSignedIn() {
       return request.auth != null;
     }
 
+    function isVerifiedUser() {
+      return isSignedIn() && request.auth.token.email_verified == true;
+    }
+
     function isOwner(userId) {
-      return isSignedIn() && request.auth.uid == userId;
+      return isVerifiedUser() && request.auth.uid == userId;
     }
 
-    function isValidId(id) {
-      return id is string && id.size() > 0 && id.size() <= 128;
+    function incoming() {
+      return request.resource.data;
     }
 
-    // User document and private subcollections
+    function existing() {
+      return resource.data;
+    }
+
+    function isValidAsciiId(id) {
+      return id is string &&
+        id.size() > 0 &&
+        id.size() <= 128 &&
+        id.matches('^[a-zA-Z0-9_\\-]+$');
+    }
+
+    // Allows legacy character IDs containing CJK (e.g. 'char-1763699900-学', 'cloze_学习')
+    // while blocking slashes, whitespace, empty strings, and oversized IDs.
+    function isValidCharId(id) {
+      return id is string &&
+        id.size() > 0 &&
+        id.size() <= 128 &&
+        !id.matches('.*[/\\s].*');
+    }
+
+    function isValidSharedEntryId(id) {
+      return id is string &&
+        id.size() >= 3 &&
+        id.size() <= 128 &&
+        id.matches('^u_[0-9a-f_]+$');
+    }
+
+    function isValidDateString(val) {
+      return val is string &&
+        val.size() == 10 &&
+        val.matches('^[0-9]{4}-[0-9]{2}-[0-9]{2}$');
+    }
+
+    function isOptionalString(data, field, maxLen) {
+      return !(field in data) ||
+        data[field] == null ||
+        (data[field] is string && data[field].size() <= maxLen);
+    }
+
+    function isOptionalNumber(data, field, minVal, maxVal) {
+      return !(field in data) ||
+        data[field] == null ||
+        (data[field] is number && data[field] >= minVal && data[field] <= maxVal);
+    }
+
+    function isOptionalBool(data, field) {
+      return !(field in data) ||
+        data[field] == null ||
+        data[field] is bool;
+    }
+
+    function isValidStringList(val, maxLen) {
+      return val is list &&
+        val.size() <= maxLen &&
+        (val.size() == 0 || val[0] is string);
+    }
+
+    function isOptionalListOfMaps(data, field, maxLen) {
+      return !(field in data) ||
+        data[field] == null ||
+        (data[field] is list &&
+          data[field].size() <= maxLen &&
+          (data[field].size() == 0 || data[field][0] is map));
+    }
+
+    // ==================== ENTITY VALIDATORS ====================
+    function isValidUserProfile(data, userId) {
+      return data.keys().hasAll(['uid', 'updatedAt']) &&
+        data.keys().hasOnly(['uid', 'email', 'displayName', 'photoURL', 'updatedAt']) &&
+        data.uid is string && data.uid == userId &&
+        isOptionalString(data, 'email', 320) &&
+        isOptionalString(data, 'displayName', 200) &&
+        isOptionalString(data, 'photoURL', 1024) &&
+        data.updatedAt is string &&
+        data.updatedAt.size() >= 10 &&
+        data.updatedAt.size() <= 64;
+    }
+
+    function isValidSrs(srs) {
+      return srs is map &&
+        srs.keys().hasAll([
+          'easinessFactor', 'interval', 'repetitions', 'nextReviewDate',
+          'totalCorrect', 'totalIncorrect', 'consecutiveCorrect',
+          'masteryLevel', 'difficultyScore'
+        ]) &&
+        srs.keys().hasOnly([
+          'easinessFactor', 'interval', 'repetitions', 'nextReviewDate',
+          'totalCorrect', 'totalIncorrect', 'consecutiveCorrect',
+          'lastReviewedAt', 'masteryLevel', 'difficultyScore'
+        ]) &&
+        srs.easinessFactor is number && srs.easinessFactor >= 1.0 && srs.easinessFactor <= 10.0 &&
+        srs.interval is number && srs.interval >= 0 && srs.interval <= 100000 &&
+        srs.repetitions is number && srs.repetitions >= 0 && srs.repetitions <= 100000 &&
+        srs.nextReviewDate is number && srs.nextReviewDate >= 0 &&
+        srs.totalCorrect is number && srs.totalCorrect >= 0 && srs.totalCorrect <= 1000000 &&
+        srs.totalIncorrect is number && srs.totalIncorrect >= 0 && srs.totalIncorrect <= 1000000 &&
+        srs.consecutiveCorrect is number && srs.consecutiveCorrect >= 0 && srs.consecutiveCorrect <= 100000 &&
+        isOptionalNumber(srs, 'lastReviewedAt', 0, 9999999999999) &&
+        srs.masteryLevel is number && srs.masteryLevel >= 0 && srs.masteryLevel <= 100 &&
+        srs.difficultyScore is number && srs.difficultyScore >= 0 && srs.difficultyScore <= 100;
+    }
+
+    function isValidCharacter(data, userId, characterId) {
+      return data.keys().hasAll([
+          'id', 'userId', 'hanzi', 'pinyin', 'hanViet', 'meaning',
+          'radical', 'strokeCount', 'listIds', 'createdAt', 'updatedAt', 'srs'
+        ]) &&
+        data.keys().hasOnly([
+          'id', 'userId', 'hanzi', 'pinyin', 'hanViet', 'meaning',
+          'radical', 'strokeCount', 'components', 'mnemonic', 'aiMnemonics',
+          'hskLevel', 'customNotes', 'examples', 'compoundWords',
+          'listIds', 'createdAt', 'updatedAt', 'srs'
+        ]) &&
+        data.id is string && data.id == characterId &&
+        data.userId is string && data.userId == userId &&
+        data.hanzi is string && data.hanzi.size() > 0 && data.hanzi.size() <= 100 &&
+        data.pinyin is string && data.pinyin.size() <= 200 &&
+        data.hanViet is string && data.hanViet.size() <= 200 &&
+        data.meaning is string && data.meaning.size() <= 1000 &&
+        data.radical is string && data.radical.size() <= 100 &&
+        data.strokeCount is number && data.strokeCount >= 0 && data.strokeCount <= 200 &&
+        isOptionalString(data, 'components', 500) &&
+        isOptionalString(data, 'mnemonic', 2000) &&
+        isOptionalListOfMaps(data, 'aiMnemonics', 10) &&
+        isOptionalNumber(data, 'hskLevel', 0, 9) &&
+        isOptionalString(data, 'customNotes', 2000) &&
+        isOptionalListOfMaps(data, 'examples', 20) &&
+        isOptionalListOfMaps(data, 'compoundWords', 30) &&
+        isValidStringList(data.listIds, 50) &&
+        data.createdAt is number && data.createdAt >= 0 &&
+        data.updatedAt is number && data.updatedAt > 0 &&
+        isValidSrs(data.srs);
+    }
+
+    function isValidWordList(data, userId, listId) {
+      return data.keys().hasAll(['id', 'userId', 'name', 'createdAt', 'updatedAt']) &&
+        data.keys().hasOnly([
+          'id', 'userId', 'name', 'description', 'icon', 'color',
+          'isPredefined', 'createdAt', 'updatedAt'
+        ]) &&
+        data.id is string && data.id == listId &&
+        data.userId is string && data.userId == userId &&
+        data.name is string && data.name.size() > 0 && data.name.size() <= 100 &&
+        isOptionalString(data, 'description', 500) &&
+        isOptionalString(data, 'icon', 64) &&
+        isOptionalString(data, 'color', 64) &&
+        isOptionalBool(data, 'isPredefined') &&
+        data.createdAt is number && data.createdAt >= 0 &&
+        data.updatedAt is number && data.updatedAt > 0;
+    }
+
+    function isValidUserStats(data, userId) {
+      return data.keys().hasAll([
+          'userId', 'totalSaved', 'totalMastered', 'totalReviews',
+          'accuracy', 'streakDays', 'lastStudyDate', 'totalStudyTimeSeconds', 'updatedAt'
+        ]) &&
+        data.keys().hasOnly([
+          'userId', 'totalSaved', 'totalMastered', 'totalReviews',
+          'accuracy', 'streakDays', 'lastStudyDate', 'totalStudyTimeSeconds', 'updatedAt'
+        ]) &&
+        data.userId is string && data.userId == userId &&
+        data.totalSaved is number && data.totalSaved >= 0 && data.totalSaved <= 1000000 &&
+        data.totalMastered is number && data.totalMastered >= 0 && data.totalMastered <= 1000000 &&
+        data.totalReviews is number && data.totalReviews >= 0 && data.totalReviews <= 10000000 &&
+        data.accuracy is number && data.accuracy >= 0 && data.accuracy <= 100 &&
+        data.streakDays is number && data.streakDays >= 0 && data.streakDays <= 100000 &&
+        isValidDateString(data.lastStudyDate) &&
+        data.totalStudyTimeSeconds is number && data.totalStudyTimeSeconds >= 0 && data.totalStudyTimeSeconds <= 1000000000 &&
+        data.updatedAt is number && data.updatedAt > 0;
+    }
+
+    function isValidQuestionType(qType) {
+      return qType in [
+        'flashcard', 'hanzi_to_meaning', 'meaning_to_hanzi', 'pinyin_to_hanzi',
+        'hanzi_to_pinyin', 'audio_to_hanzi', 'type_pinyin', 'type_hanzi',
+        'matching', 'fill_sentence', 'reorder_words', 'stroke_writing'
+      ];
+    }
+
+    function isValidReviewLog(data, userId, logId) {
+      return data.keys().hasAll([
+          'id', 'userId', 'characterId', 'hanzi',
+          'questionType', 'isCorrect', 'timeSpentMs', 'timestamp'
+        ]) &&
+        data.keys().hasOnly([
+          'id', 'userId', 'characterId', 'hanzi',
+          'questionType', 'isCorrect', 'timeSpentMs', 'timestamp', 'updatedAt'
+        ]) &&
+        data.id is string && data.id == logId &&
+        data.userId is string && data.userId == userId &&
+        isValidCharId(data.characterId) &&
+        data.hanzi is string && data.hanzi.size() > 0 && data.hanzi.size() <= 100 &&
+        isValidQuestionType(data.questionType) &&
+        data.isCorrect is bool &&
+        data.timeSpentMs is number && data.timeSpentMs >= 0 && data.timeSpentMs <= 86400000 &&
+        data.timestamp is number && data.timestamp > 0 &&
+        isOptionalNumber(data, 'updatedAt', 0, 9999999999999);
+    }
+
+    function isValidStudyMode(mode) {
+      return mode in [
+        'smart_daily', 'quick_flashcard', 'stroke_writing', 'weakness',
+        'random_test', 'sentence_cloze', 'compound_words', 'compound_expansion', 'custom_list'
+      ];
+    }
+
+    function isValidSavedSession(data, userId, sessionId) {
+      return data.keys().hasAll([
+          'id', 'userId', 'mode', 'questionLimit', 'questions',
+          'currentIndex', 'correctCount', 'incorrectCount', 'sessionResults',
+          'elapsedMs', 'createdAt', 'updatedAt'
+        ]) &&
+        data.keys().hasOnly([
+          'id', 'userId', 'mode', 'selectedListId', 'questionLimit', 'questions',
+          'currentIndex', 'correctCount', 'incorrectCount', 'sessionResults',
+          'elapsedMs', 'createdAt', 'updatedAt'
+        ]) &&
+        data.id is string && data.id == sessionId &&
+        data.userId is string && data.userId == userId &&
+        isValidStudyMode(data.mode) &&
+        isOptionalString(data, 'selectedListId', 128) &&
+        (data.questionLimit == 'all' || (data.questionLimit is number && data.questionLimit >= 1 && data.questionLimit <= 5000)) &&
+        data.questions is list && data.questions.size() > 0 && data.questions.size() <= 2000 && data.questions[0] is map &&
+        data.currentIndex is number && data.currentIndex >= 0 && data.currentIndex <= data.questions.size() &&
+        data.correctCount is number && data.correctCount >= 0 && data.correctCount <= 5000 &&
+        data.incorrectCount is number && data.incorrectCount >= 0 && data.incorrectCount <= 5000 &&
+        data.sessionResults is list && data.sessionResults.size() <= 5000 &&
+        (data.sessionResults.size() == 0 || data.sessionResults[0] is map) &&
+        data.elapsedMs is number && data.elapsedMs >= 0 && data.elapsedMs <= 864000000 &&
+        data.createdAt is number && data.createdAt > 0 &&
+        data.updatedAt is number && data.updatedAt > 0;
+    }
+
+    function isValidDailyUsage(data, userId, usageId) {
+      return data.keys().hasAll([
+          'userId', 'date', 'enrichCount', 'mnemonicCount', 'limit', 'updatedAt'
+        ]) &&
+        data.keys().hasOnly([
+          'userId', 'date', 'enrichCount', 'mnemonicCount', 'limit', 'updatedAt'
+        ]) &&
+        data.userId is string && data.userId == userId &&
+        isValidDateString(data.date) && data.date == usageId &&
+        data.enrichCount is number && data.enrichCount >= 0 && data.enrichCount <= 10000 &&
+        data.mnemonicCount is number && data.mnemonicCount >= 0 && data.mnemonicCount <= 10000 &&
+        data.limit is number && data.limit >= 0 && data.limit <= 10000 &&
+        data.updatedAt is number && data.updatedAt > 0;
+    }
+
+    function isValidSharedSource(src) {
+      return src in ['builtin_hsk', 'extended_dict', 'ai_cached'];
+    }
+
+    function isUsableSharedMeaning(meaning) {
+      return meaning is string &&
+        meaning.size() > 0 &&
+        meaning.size() <= 500 &&
+        !meaning.matches('.*(Từ vựng mới|Cần kết nối AI).*') &&
+        meaning != 'Chưa có nghĩa' &&
+        !meaning.matches('^\\(EN\\).*');
+    }
+
+    function isValidSharedDictionaryEntry(data, entryId) {
+      return data.keys().hasAll([
+          'id', 'hanzi', 'pinyin', 'hanViet', 'meaning', 'radical',
+          'strokeCount', 'source', 'createdBy', 'updatedAt'
+        ]) &&
+        data.keys().hasOnly([
+          'id', 'hanzi', 'pinyin', 'hanViet', 'meaning', 'radical',
+          'strokeCount', 'components', 'mnemonic', 'hskLevel',
+          'examples', 'compoundWords', 'aiMnemonics', 'source', 'createdBy', 'updatedAt'
+        ]) &&
+        data.id is string && data.id == entryId &&
+        data.hanzi is string && data.hanzi.size() > 0 && data.hanzi.size() <= 50 &&
+        data.pinyin is string && data.pinyin.size() <= 200 &&
+        data.hanViet is string && data.hanViet.size() <= 200 &&
+        isUsableSharedMeaning(data.meaning) &&
+        data.radical is string && data.radical.size() > 0 && data.radical.size() <= 100 &&
+        data.strokeCount is number && data.strokeCount >= 1 && data.strokeCount <= 200 &&
+        isOptionalString(data, 'components', 500) &&
+        isOptionalString(data, 'mnemonic', 2000) &&
+        isOptionalNumber(data, 'hskLevel', 0, 9) &&
+        isOptionalListOfMaps(data, 'examples', 20) &&
+        isOptionalListOfMaps(data, 'compoundWords', 30) &&
+        isOptionalListOfMaps(data, 'aiMnemonics', 10) &&
+        isValidSharedSource(data.source) &&
+        data.createdBy is string && isValidAsciiId(data.createdBy) &&
+        data.updatedAt is number && data.updatedAt > 0;
+    }
+
+    // ==================== COLLECTION MATCH RULES ====================
+
+    // User profile & private subcollections (strictly isolated to owner UID)
     match /users/{userId} {
-      allow read, write: if isOwner(userId);
+      allow get, delete: if isOwner(userId) && isValidAsciiId(userId);
+      allow list: if false;
+      allow create: if isOwner(userId) &&
+        isValidAsciiId(userId) &&
+        isValidUserProfile(incoming(), userId);
+      allow update: if isOwner(userId) &&
+        isValidAsciiId(userId) &&
+        isValidUserProfile(incoming(), userId) &&
+        incoming().uid == existing().uid &&
+        incoming().diff(existing()).affectedKeys().hasOnly(['email', 'displayName', 'photoURL', 'updatedAt']);
 
       // User's private vocabulary characters
       match /characters/{characterId} {
-        allow read, delete: if isOwner(userId);
-        allow create, update: if isOwner(userId) &&
-          request.resource.data.userId == userId &&
-          request.resource.data.hanzi is string &&
-          request.resource.data.hanzi.size() > 0 &&
-          request.resource.data.hanzi.size() <= 100;
+        allow get, delete: if isOwner(userId) && isValidCharId(characterId);
+        allow list: if isOwner(userId);
+        allow create: if isOwner(userId) &&
+          isValidCharId(characterId) &&
+          isValidCharacter(incoming(), userId, characterId);
+        allow update: if isOwner(userId) &&
+          isValidCharId(characterId) &&
+          isValidCharacter(incoming(), userId, characterId) &&
+          incoming().id == existing().id &&
+          incoming().userId == existing().userId &&
+          incoming().diff(existing()).affectedKeys().hasOnly([
+            'hanzi', 'pinyin', 'hanViet', 'meaning', 'radical', 'strokeCount',
+            'components', 'mnemonic', 'aiMnemonics', 'hskLevel', 'customNotes',
+            'examples', 'compoundWords', 'listIds', 'createdAt', 'updatedAt', 'srs'
+          ]);
       }
 
       // User's private custom word lists
       match /wordLists/{listId} {
-        allow read, delete: if isOwner(userId);
-        allow create, update: if isOwner(userId) &&
-          request.resource.data.userId == userId &&
-          request.resource.data.name is string &&
-          request.resource.data.name.size() > 0 &&
-          request.resource.data.name.size() <= 100;
+        allow get, delete: if isOwner(userId) && isValidAsciiId(listId);
+        allow list: if isOwner(userId);
+        allow create: if isOwner(userId) &&
+          isValidAsciiId(listId) &&
+          isValidWordList(incoming(), userId, listId);
+        allow update: if isOwner(userId) &&
+          isValidAsciiId(listId) &&
+          isValidWordList(incoming(), userId, listId) &&
+          incoming().id == existing().id &&
+          incoming().userId == existing().userId &&
+          incoming().createdAt == existing().createdAt &&
+          incoming().diff(existing()).affectedKeys().hasOnly([
+            'name', 'description', 'icon', 'color', 'isPredefined', 'updatedAt'
+          ]);
       }
 
-      // User's learning statistics
+      // User's learning statistics (single 'main' document)
       match /stats/{statId} {
-        allow read, write: if isOwner(userId);
+        allow get, delete: if isOwner(userId) && statId == 'main';
+        allow list: if isOwner(userId);
+        allow create: if isOwner(userId) &&
+          statId == 'main' &&
+          isValidUserStats(incoming(), userId);
+        allow update: if isOwner(userId) &&
+          statId == 'main' &&
+          isValidUserStats(incoming(), userId) &&
+          incoming().userId == existing().userId &&
+          incoming().diff(existing()).affectedKeys().hasOnly([
+            'totalSaved', 'totalMastered', 'totalReviews', 'accuracy',
+            'streakDays', 'lastStudyDate', 'totalStudyTimeSeconds', 'updatedAt'
+          ]);
       }
 
       // User's review logs
       match /reviewLogs/{logId} {
-        allow read, write: if isOwner(userId);
+        allow get, delete: if isOwner(userId) && isValidAsciiId(logId);
+        allow list: if isOwner(userId);
+        allow create: if isOwner(userId) &&
+          isValidAsciiId(logId) &&
+          isValidReviewLog(incoming(), userId, logId);
+        allow update: if isOwner(userId) &&
+          isValidAsciiId(logId) &&
+          isValidReviewLog(incoming(), userId, logId) &&
+          incoming().id == existing().id &&
+          incoming().userId == existing().userId &&
+          incoming().timestamp == existing().timestamp &&
+          incoming().diff(existing()).affectedKeys().hasOnly(['isCorrect', 'timeSpentMs', 'updatedAt']);
       }
 
       // User's in-progress study sessions (cross-device resume)
       match /savedSessions/{sessionId} {
-        allow get, delete: if isOwner(userId) && isValidId(sessionId);
+        allow get, delete: if isOwner(userId) && isValidAsciiId(sessionId);
         allow list: if isOwner(userId);
-        allow create, update: if isOwner(userId) && isValidId(sessionId) &&
-          request.resource.data.userId == userId &&
-          request.resource.data.id == sessionId &&
-          request.resource.data.mode is string &&
-          request.resource.data.mode.size() > 0 &&
-          request.resource.data.mode.size() <= 50 &&
-          request.resource.data.questions is list &&
-          request.resource.data.questions.size() > 0 &&
-          request.resource.data.questions.size() <= 5000 &&
-          request.resource.data.currentIndex is number &&
-          request.resource.data.currentIndex >= 0 &&
-          request.resource.data.updatedAt is number;
+        allow create: if isOwner(userId) &&
+          isValidAsciiId(sessionId) &&
+          isValidSavedSession(incoming(), userId, sessionId);
+        allow update: if isOwner(userId) &&
+          isValidAsciiId(sessionId) &&
+          isValidSavedSession(incoming(), userId, sessionId) &&
+          incoming().id == existing().id &&
+          incoming().userId == existing().userId &&
+          incoming().diff(existing()).affectedKeys().hasOnly([
+            'mode', 'selectedListId', 'questionLimit', 'questions',
+            'currentIndex', 'correctCount', 'incorrectCount',
+            'sessionResults', 'elapsedMs', 'createdAt', 'updatedAt'
+          ]);
       }
 
-      // User's daily AI lookup usage
+      // User's daily AI lookup usage (append/increment only; cannot reset or delete)
       match /usage/{usageId} {
-        allow get, list: if isOwner(userId);
-        allow create, update: if isOwner(userId) && isValidId(usageId) &&
-          request.resource.data.userId == userId &&
-          request.resource.data.date is string &&
-          request.resource.data.date.size() <= 20 &&
-          request.resource.data.enrichCount is number &&
-          request.resource.data.enrichCount >= 0 &&
-          request.resource.data.mnemonicCount is number &&
-          request.resource.data.mnemonicCount >= 0;
+        allow get: if isOwner(userId) && isValidDateString(usageId);
+        allow list: if isOwner(userId);
+        allow create: if isOwner(userId) &&
+          isValidDateString(usageId) &&
+          isValidDailyUsage(incoming(), userId, usageId);
+        allow update: if isOwner(userId) &&
+          isValidDateString(usageId) &&
+          isValidDailyUsage(incoming(), userId, usageId) &&
+          incoming().userId == existing().userId &&
+          incoming().date == existing().date &&
+          incoming().enrichCount >= existing().enrichCount &&
+          incoming().mnemonicCount >= existing().mnemonicCount &&
+          incoming().diff(existing()).affectedKeys().hasOnly([
+            'enrichCount', 'mnemonicCount', 'limit', 'updatedAt'
+          ]);
+        allow delete: if false;
       }
     }
 
     // Shared community dictionary & mnemonic cache
     match /sharedDictionary/{entryId} {
-      allow get, list: if isSignedIn();
-      allow create: if isSignedIn() && isValidId(entryId) &&
-        request.resource.data.id == entryId &&
-        request.resource.data.createdBy == request.auth.uid &&
-        request.resource.data.hanzi is string &&
-        request.resource.data.hanzi.size() > 0 &&
-        request.resource.data.hanzi.size() <= 50 &&
-        request.resource.data.pinyin is string &&
-        request.resource.data.pinyin.size() <= 200 &&
-        request.resource.data.meaning is string &&
-        request.resource.data.meaning.size() > 0 &&
-        request.resource.data.meaning.size() <= 500 &&
-        request.resource.data.updatedAt is number;
-      allow update: if isSignedIn() && isValidId(entryId) &&
-        request.resource.data.id == entryId &&
-        request.resource.data.hanzi == resource.data.hanzi &&
-        request.resource.data.hanzi.size() <= 50 &&
-        request.resource.data.pinyin is string &&
-        request.resource.data.pinyin.size() <= 200 &&
-        request.resource.data.meaning is string &&
-        request.resource.data.meaning.size() > 0 &&
-        request.resource.data.meaning.size() <= 500 &&
-        request.resource.data.updatedAt is number;
+      allow get: if isVerifiedUser() && isValidSharedEntryId(entryId);
+      allow list: if isVerifiedUser();
+      allow create: if isVerifiedUser() &&
+        isValidSharedEntryId(entryId) &&
+        isValidSharedDictionaryEntry(incoming(), entryId) &&
+        incoming().createdBy == request.auth.uid;
+      allow update: if isVerifiedUser() &&
+        isValidSharedEntryId(entryId) &&
+        isValidSharedDictionaryEntry(incoming(), entryId) &&
+        existing().createdBy == request.auth.uid &&
+        incoming().createdBy == existing().createdBy &&
+        incoming().id == existing().id &&
+        incoming().hanzi == existing().hanzi &&
+        incoming().diff(existing()).affectedKeys().hasOnly([
+          'pinyin', 'hanViet', 'meaning', 'radical', 'strokeCount',
+          'components', 'mnemonic', 'hskLevel', 'examples',
+          'compoundWords', 'aiMnemonics', 'source', 'updatedAt'
+        ]);
       allow delete: if false;
     }
   }

@@ -606,6 +606,11 @@ export async function saveSharedDictionaryBatch(
         ? (existingSnap.data() as SharedDictionaryEntry)
         : null;
 
+      // Security rules only allow the original creator to update an existing shared entry
+      if (existing && existing.createdBy !== uid) {
+        continue;
+      }
+
       const mergedAiMnemonics =
         Array.isArray(entry.aiMnemonics) && entry.aiMnemonics.length > 0
           ? entry.aiMnemonics
