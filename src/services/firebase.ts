@@ -588,77 +588,16 @@ export async function lookupSharedDictionaryBatch(
 }
 
 export async function saveSharedDictionaryBatch(
-  entries: Array<Partial<SharedDictionaryEntry> & { hanzi: string }>
+  _entries: Array<Partial<SharedDictionaryEntry> & { hanzi: string }>
 ): Promise<void> {
-  const uid = auth.currentUser?.uid;
-  if (!uid || entries.length === 0) return;
-
-  for (const entry of entries) {
-    const clean = entry.hanzi?.trim();
-    if (!clean || clean.length > 50 || !isUsableMeaning(entry.meaning)) continue;
-
-    const docId = hanziToCacheDocId(clean);
-    const docRef = doc(db, 'sharedDictionary', docId);
-
-    try {
-      const existingSnap = await getDoc(docRef);
-      const existing = existingSnap.exists()
-        ? (existingSnap.data() as SharedDictionaryEntry)
-        : null;
-
-      // Security rules only allow the original creator to update an existing shared entry
-      if (existing && existing.createdBy !== uid) {
-        continue;
-      }
-
-      const mergedAiMnemonics =
-        Array.isArray(entry.aiMnemonics) && entry.aiMnemonics.length > 0
-          ? entry.aiMnemonics
-          : existing?.aiMnemonics;
-
-      const payload: Record<string, any> = {
-        id: docId,
-        hanzi: clean,
-        pinyin: (
-          (entry.pinyin && entry.pinyin !== 'chưa rõ' ? entry.pinyin : existing?.pinyin) ||
-          ''
-        ).slice(0, 200),
-        hanViet: entry.hanViet && entry.hanViet !== 'CHƯA RÕ'
-          ? entry.hanViet
-          : existing?.hanViet || 'CHƯA RÕ',
-        meaning: (
-          (isUsableMeaning(entry.meaning) ? entry.meaning : existing?.meaning) ||
-          clean
-        ).slice(0, 500),
-        radical: entry.radical || existing?.radical || 'Bộ thủ',
-        strokeCount: Number(entry.strokeCount) || existing?.strokeCount || 1,
-        components: entry.components || existing?.components || '',
-        mnemonic: entry.mnemonic || existing?.mnemonic || '',
-        hskLevel: entry.hskLevel || existing?.hskLevel || null,
-        examples:
-          Array.isArray(entry.examples) && entry.examples.length > 0
-            ? entry.examples
-            : existing?.examples || [],
-        compoundWords:
-          Array.isArray(entry.compoundWords) && entry.compoundWords.length > 0
-            ? entry.compoundWords
-            : existing?.compoundWords || [],
-        aiMnemonics: mergedAiMnemonics || null,
-        source: entry.source || existing?.source || 'ai_cached',
-        createdBy: existing?.createdBy || uid,
-        updatedAt: Date.now(),
-      };
-
-      await setDoc(docRef, sanitizeForFirestore(payload), { merge: true });
-    } catch (err) {
-      console.warn('[SharedDictionary] save entry skipped:', clean, err);
-    }
-  }
+  // No-op: client writes to Firestore `sharedDictionary` are disabled by security rules
+  // (read-only for clients). Server-side lookups and caches handle shared persistence.
+  return;
 }
 
 export async function saveSharedMnemonicToCache(
-  hanzi: string,
-  baseInfo: {
+  _hanzi: string,
+  _baseInfo: {
     pinyin?: string;
     hanViet?: string;
     meaning?: string;
@@ -668,32 +607,11 @@ export async function saveSharedMnemonicToCache(
     mnemonic?: string;
     hskLevel?: number;
   },
-  aiMnemonics: MnemonicVariant[]
+  _aiMnemonics: MnemonicVariant[]
 ): Promise<void> {
-  if (!auth.currentUser?.uid || aiMnemonics.length === 0) return;
-  const clean = hanzi.trim();
-  const builtIn = lookupBuiltIn(clean);
-  const effectiveMeaning = isUsableMeaning(baseInfo.meaning)
-    ? baseInfo.meaning!
-    : builtIn?.meaning || clean;
-
-  await saveSharedDictionaryBatch([
-    {
-      hanzi: clean,
-      pinyin: baseInfo.pinyin || builtIn?.pinyin || '',
-      hanViet: baseInfo.hanViet || builtIn?.hanViet || 'CHƯA RÕ',
-      meaning: effectiveMeaning,
-      radical: baseInfo.radical || builtIn?.radical || 'Bộ thủ',
-      strokeCount: baseInfo.strokeCount || builtIn?.strokeCount || 1,
-      components: baseInfo.components || builtIn?.components || '',
-      mnemonic: baseInfo.mnemonic || builtIn?.mnemonic || '',
-      hskLevel: baseInfo.hskLevel || builtIn?.hskLevel,
-      examples: builtIn?.examples || [],
-      compoundWords: builtIn?.compoundWords || [],
-      aiMnemonics,
-      source: builtIn ? 'builtin_hsk' : 'ai_cached',
-    },
-  ]);
+  // No-op: client writes to Firestore `sharedDictionary` are disabled by security rules
+  // (read-only for clients). Mnemonics still save to server cache and user's own vocabulary doc.
+  return;
 }
 
 export async function trackDailyAIUsage(

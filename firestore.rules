@@ -437,26 +437,12 @@ service cloud.firestore {
       }
     }
 
-    // Shared community dictionary & mnemonic cache
+    // Shared community dictionary & mnemonic cache (read-only for clients; writes handled server-side)
     match /sharedDictionary/{entryId} {
       allow get: if isVerifiedUser() && isValidSharedEntryId(entryId);
       allow list: if isVerifiedUser();
-      allow create: if isVerifiedUser() &&
-        isValidSharedEntryId(entryId) &&
-        isValidSharedDictionaryEntry(incoming(), entryId) &&
-        incoming().createdBy == request.auth.uid;
-      allow update: if isVerifiedUser() &&
-        isValidSharedEntryId(entryId) &&
-        isValidSharedDictionaryEntry(incoming(), entryId) &&
-        existing().createdBy == request.auth.uid &&
-        incoming().createdBy == existing().createdBy &&
-        incoming().id == existing().id &&
-        incoming().hanzi == existing().hanzi &&
-        incoming().diff(existing()).affectedKeys().hasOnly([
-          'pinyin', 'hanViet', 'meaning', 'radical', 'strokeCount',
-          'components', 'mnemonic', 'hskLevel', 'examples',
-          'compoundWords', 'aiMnemonics', 'source', 'updatedAt'
-        ]);
+      allow create: if false;
+      allow update: if false;
       allow delete: if false;
     }
   }
