@@ -709,13 +709,31 @@ export async function deleteCharactersBatchFromCloud(
   }
 }
 
+export interface CharacterBatchSaveResult {
+  attempted: number;
+  succeededIds: string[];
+  succeededHanzi: string[];
+  failedDocs: Array<{ id: string; hanzi: string; code: string; reason: string }>;
+  skippedInvalid: Array<{ id: string; hanzi: string }>;
+}
+
 /**
  * Saves a batch of characters to Cloud Firestore (max 400 per batch).
  * Validates and safely repairs each document before writing, and falls back to
  * per-document writes if a batch is rejected so valid records still reach Cloud.
  */
-export async function saveCharactersBatchToCloud(userId: string, characters: Character[]): Promise<void> {
-  if (characters.length === 0) return;
+export async function saveCharactersBatchToCloud(
+  userId: string,
+  characters: Character[]
+): Promise<CharacterBatchSaveResult> {
+  const result: CharacterBatchSaveResult = {
+    attempted: characters.length,
+    succeededIds: [],
+    succeededHanzi: [],
+    failedDocs: [],
+    skippedInvalid: [],
+  };
+  if (characters.length === 0) return result;
 
   const preparedDocs: Array<{ docId: string; hanzi: string; payload: Record<string, any> }> = [];
   for (const c of characters) {
@@ -726,16 +744,19 @@ export async function saveCharactersBatchToCloud(userId: string, characters: Cha
         hanzi: payload.hanzi,
         payload,
       });
+    } else {
+      result.skippedInvalid.push({
+        id: String(c?.id || ''),
+        hanzi: String(c?.hanzi || ''),
+      });
     }
   }
 
-  if (preparedDocs.length === 0) return;
+  if (preparedDocs.length === 0) return result;
 
   const path = `users/${userId}/characters`;
   const chunkSize = 400;
-  let totalSucceeded = 0;
   let lastError: unknown = null;
-  const failedDocs: Array<{ id: string; hanzi: string; code: string; reason: string }> = [];
 
   for (let i = 0; i < preparedDocs.length; i += chunkSize) {
     const chunk = preparedDocs.slice(i, i + chunkSize);
@@ -746,7 +767,10 @@ export async function saveCharactersBatchToCloud(userId: string, characters: Cha
         batch.set(docRef, item.payload, { merge: true });
       });
       await batch.commit();
-      totalSucceeded += chunk.length;
+      chunk.forEach((item) => {
+        result.succeededIds.push(item.docId);
+        result.succeededHanzi.push(item.hanzi);
+      });
     } catch (batchErr: any) {
       lastError = batchErr;
       console.warn(
@@ -757,10 +781,11 @@ export async function saveCharactersBatchToCloud(userId: string, characters: Cha
         try {
           const docRef = doc(db, 'users', userId, 'characters', item.docId);
           await setDoc(docRef, item.payload, { merge: true });
-          totalSucceeded += 1;
+          result.succeededIds.push(item.docId);
+          result.succeededHanzi.push(item.hanzi);
         } catch (docErr: any) {
           lastError = docErr;
-          failedDocs.push({
+          result.failedDocs.push({
             id: item.docId,
             hanzi: item.hanzi,
             code: String(docErr?.code || ''),
@@ -771,16 +796,18 @@ export async function saveCharactersBatchToCloud(userId: string, characters: Cha
     }
   }
 
-  if (failedDocs.length > 0) {
+  if (result.failedDocs.length > 0) {
     console.error(
-      `[CloudSync] ${failedDocs.length} character document(s) failed during per-document fallback under ${path}:`,
-      JSON.stringify(failedDocs)
+      `[CloudSync] ${result.failedDocs.length} character document(s) failed during per-document fallback under ${path}:`,
+      JSON.stringify(result.failedDocs)
     );
   }
 
-  if (totalSucceeded === 0 && lastError) {
+  if (result.succeededIds.length === 0 && lastError) {
     handleFirestoreError(lastError, OperationType.WRITE, path);
   }
+
+  return result;
 }
 
 /**
@@ -802,22 +829,78 @@ export async function loadWordListsFromCloud(userId: string): Promise<WordList[]
   }
 }
 
+function isValidAsciiIdClient(id: unknown): id is string {
+  return typeof id === 'string' && id.length > 0 && id.length <= 128 && /^[a-zA-Z0-9_-]+$/.test(id);
+}
+
+function prepareWordListPayloadForCloud(list: WordList, userId: string): Record<string, any> | null {
+  if (!list || typeof list !== 'object') return null;
+  const id = typeof list.id === 'string' ? list.id.trim() : '';
+  if (!isValidAsciiIdClient(id)) return null;
+  const name = typeof list.name === 'string' ? truncateStringSafe(list.name.trim(), 100) : '';
+  if (!name) return null;
+
+  const now = Date.now();
+  const payload: Record<string, any> = {
+    id,
+    userId,
+    name,
+    createdAt: isFiniteNum(list.createdAt) && list.createdAt >= 0 ? list.createdAt : now,
+    updatedAt: now,
+  };
+
+  if (typeof list.description === 'string') {
+    payload.description = truncateStringSafe(list.description, 500);
+  }
+  if (typeof list.icon === 'string') {
+    payload.icon = truncateStringSafe(list.icon, 64);
+  }
+  if (typeof list.color === 'string') {
+    payload.color = truncateStringSafe(list.color, 64);
+  }
+  if (typeof list.isPredefined === 'boolean') {
+    payload.isPredefined = list.isPredefined;
+  }
+
+  return sanitizeForFirestore(payload);
+}
+
 /**
  * Saves custom word lists to Cloud Firestore
  */
 export async function saveWordListsToCloud(userId: string, wordLists: WordList[]): Promise<void> {
   if (wordLists.length === 0) return;
+  const prepared = wordLists
+    .map((list) => ({ id: list.id, payload: prepareWordListPayloadForCloud(list, userId) }))
+    .filter((item): item is { id: string; payload: Record<string, any> } => Boolean(item.payload));
+
+  if (prepared.length === 0) return;
+
   const path = `users/${userId}/wordLists`;
   try {
     const batch = writeBatch(db);
-    wordLists.forEach((list) => {
-      const docRef = doc(db, 'users', userId, 'wordLists', list.id);
-      const cleanList = sanitizeForFirestore({ ...list, userId, updatedAt: Date.now() });
-      batch.set(docRef, cleanList, { merge: true });
+    prepared.forEach((item) => {
+      const docRef = doc(db, 'users', userId, 'wordLists', item.id);
+      batch.set(docRef, item.payload, { merge: true });
     });
     await batch.commit();
-  } catch (err) {
-    handleFirestoreError(err, OperationType.WRITE, path);
+  } catch (batchErr) {
+    console.warn('[CloudSync] WordLists batch failed, falling back to per-doc:', batchErr);
+    let succeeded = 0;
+    let lastError: unknown = batchErr;
+    for (const item of prepared) {
+      try {
+        const docRef = doc(db, 'users', userId, 'wordLists', item.id);
+        await setDoc(docRef, item.payload, { merge: true });
+        succeeded++;
+      } catch (docErr) {
+        lastError = docErr;
+        console.warn(`[CloudSync] Failed saving wordList ${item.id}:`, docErr);
+      }
+    }
+    if (succeeded === 0 && lastError) {
+      handleFirestoreError(lastError, OperationType.WRITE, path);
+    }
   }
 }
 
@@ -844,9 +927,26 @@ export async function loadUserStatsFromCloud(userId: string): Promise<UserStats 
  */
 export async function saveUserStatsToCloud(userId: string, stats: UserStats): Promise<void> {
   const path = `users/${userId}/stats/main`;
+  const todayStr = new Date().toISOString().split('T')[0];
+  const rawDate = typeof stats?.lastStudyDate === 'string' ? stats.lastStudyDate.trim() : '';
+  const validDate = /^[0-9]{4}-[0-9]{2}-[0-9]{2}$/.test(rawDate) ? rawDate : todayStr;
+
+  const cleanStats = sanitizeForFirestore({
+    userId,
+    totalSaved: isFiniteNum(stats?.totalSaved) ? clampNum(Math.round(stats.totalSaved), 0, 1000000) : 0,
+    totalMastered: isFiniteNum(stats?.totalMastered) ? clampNum(Math.round(stats.totalMastered), 0, 1000000) : 0,
+    totalReviews: isFiniteNum(stats?.totalReviews) ? clampNum(Math.round(stats.totalReviews), 0, 10000000) : 0,
+    accuracy: isFiniteNum(stats?.accuracy) ? clampNum(stats.accuracy, 0, 100) : 0,
+    streakDays: isFiniteNum(stats?.streakDays) ? clampNum(Math.round(stats.streakDays), 0, 100000) : 0,
+    lastStudyDate: validDate,
+    totalStudyTimeSeconds: isFiniteNum(stats?.totalStudyTimeSeconds)
+      ? clampNum(Math.round(stats.totalStudyTimeSeconds), 0, 1000000000)
+      : 0,
+    updatedAt: Date.now(),
+  });
+
   try {
     const docRef = doc(db, 'users', userId, 'stats', 'main');
-    const cleanStats = sanitizeForFirestore({ ...stats, userId, updatedAt: Date.now() });
     await setDoc(docRef, cleanStats, { merge: true });
   } catch (err) {
     handleFirestoreError(err, OperationType.WRITE, path);
@@ -965,21 +1065,60 @@ function hydrateResultFromCloud(
   };
 }
 
-function compactSessionForCloud(userId: string, session: SavedStudySession) {
+const VALID_STUDY_MODES = new Set<string>([
+  'smart_daily',
+  'quick_flashcard',
+  'stroke_writing',
+  'weakness',
+  'random_test',
+  'sentence_cloze',
+  'compound_words',
+  'compound_expansion',
+  'custom_list',
+]);
+
+function compactSessionForCloud(userId: string, session: SavedStudySession): Record<string, any> | null {
+  if (!session || !isValidAsciiIdClient(session.id) || !VALID_STUDY_MODES.has(session.mode)) {
+    return null;
+  }
+  const questions = Array.isArray(session.questions)
+    ? session.questions.slice(0, 2000).map(compactQuestionForCloud)
+    : [];
+  if (questions.length === 0) return null;
+
+  const now = Date.now();
+  const safeLimit =
+    session.questionLimit === 'all'
+      ? 'all'
+      : isFiniteNum(session.questionLimit)
+      ? clampNum(Math.round(session.questionLimit), 1, 5000)
+      : 'all';
+
   return sanitizeForFirestore({
     id: session.id,
     userId,
     mode: session.mode,
-    selectedListId: session.selectedListId ?? null,
-    questionLimit: session.questionLimit,
-    questions: session.questions.map(compactQuestionForCloud),
-    currentIndex: session.currentIndex,
-    correctCount: session.correctCount,
-    incorrectCount: session.incorrectCount,
-    sessionResults: (session.sessionResults || []).map(compactResultForCloud),
-    elapsedMs: session.elapsedMs || 0,
-    createdAt: session.createdAt || Date.now(),
-    updatedAt: session.updatedAt || Date.now(),
+    selectedListId:
+      typeof session.selectedListId === 'string'
+        ? truncateStringSafe(session.selectedListId, 128)
+        : null,
+    questionLimit: safeLimit,
+    questions,
+    currentIndex: isFiniteNum(session.currentIndex)
+      ? clampNum(Math.round(session.currentIndex), 0, questions.length)
+      : 0,
+    correctCount: isFiniteNum(session.correctCount)
+      ? clampNum(Math.round(session.correctCount), 0, 5000)
+      : 0,
+    incorrectCount: isFiniteNum(session.incorrectCount)
+      ? clampNum(Math.round(session.incorrectCount), 0, 5000)
+      : 0,
+    sessionResults: Array.isArray(session.sessionResults)
+      ? session.sessionResults.slice(0, 5000).map(compactResultForCloud)
+      : [],
+    elapsedMs: isFiniteNum(session.elapsedMs) ? clampNum(session.elapsedMs, 0, 864000000) : 0,
+    createdAt: isFiniteNum(session.createdAt) && session.createdAt > 0 ? session.createdAt : now,
+    updatedAt: isFiniteNum(session.updatedAt) && session.updatedAt > 0 ? session.updatedAt : now,
   });
 }
 
@@ -1045,10 +1184,11 @@ export async function saveSavedSessionToCloud(
   userId: string,
   session: SavedStudySession
 ): Promise<void> {
+  const payload = compactSessionForCloud(userId, session);
+  if (!payload) return;
   const path = `users/${userId}/savedSessions/${session.id}`;
   try {
     const docRef = doc(db, 'users', userId, 'savedSessions', session.id);
-    const payload = compactSessionForCloud(userId, session);
     await setDoc(docRef, payload, { merge: false });
   } catch (err) {
     handleFirestoreError(err, OperationType.WRITE, path);
@@ -1126,16 +1266,37 @@ export async function saveSavedSessionsBatchToCloud(
   sessions: SavedStudySession[]
 ): Promise<void> {
   if (sessions.length === 0) return;
+  const prepared = sessions
+    .map((s) => ({ id: s.id, payload: compactSessionForCloud(userId, s) }))
+    .filter((item): item is { id: string; payload: Record<string, any> } => Boolean(item.payload));
+
+  if (prepared.length === 0) return;
+
   const path = `users/${userId}/savedSessions`;
   try {
     const batch = writeBatch(db);
-    sessions.forEach((session) => {
-      const docRef = doc(db, 'users', userId, 'savedSessions', session.id);
-      batch.set(docRef, compactSessionForCloud(userId, session), { merge: false });
+    prepared.forEach((item) => {
+      const docRef = doc(db, 'users', userId, 'savedSessions', item.id);
+      batch.set(docRef, item.payload, { merge: false });
     });
     await batch.commit();
-  } catch (err) {
-    handleFirestoreError(err, OperationType.WRITE, path);
+  } catch (batchErr) {
+    console.warn('[CloudSync] SavedSessions batch failed, falling back to per-doc:', batchErr);
+    let succeeded = 0;
+    let lastError: unknown = batchErr;
+    for (const item of prepared) {
+      try {
+        const docRef = doc(db, 'users', userId, 'savedSessions', item.id);
+        await setDoc(docRef, item.payload, { merge: false });
+        succeeded++;
+      } catch (docErr) {
+        lastError = docErr;
+        console.warn(`[CloudSync] Failed saving session ${item.id}:`, docErr);
+      }
+    }
+    if (succeeded === 0 && lastError) {
+      handleFirestoreError(lastError, OperationType.WRITE, path);
+    }
   }
 }
 

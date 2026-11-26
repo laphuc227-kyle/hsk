@@ -10,6 +10,7 @@ const KEYS = {
   SAVED_SESSIONS: 'hanzi_tutor_saved_sessions_v1',
   OWNER_UID: 'hanzi_tutor_owner_uid_v1',
   PENDING_CLOUD_DELETES: 'hanzi_tutor_pending_cloud_deletes_v1',
+  PENDING_CLOUD_UPSERTS: 'hanzi_tutor_pending_cloud_upserts_v1',
   CLOUD_SYNC_SNAPSHOT: 'hanzi_tutor_cloud_sync_snapshot_v1',
   DISMISSED_COMPOUNDS: 'hanzi_tutor_dismissed_compounds_v1',
 };
@@ -18,6 +19,12 @@ export interface PendingCloudDeleteItem {
   id: string;
   hanzi: string;
   deletedAt: number;
+}
+
+export interface PendingCloudUpsertItem {
+  id: string;
+  hanzi: string;
+  updatedAt: number;
 }
 
 export interface CloudSyncSnapshot {
@@ -149,6 +156,94 @@ export function clearPendingCloudDeletes(uid?: string): void {
   }
 }
 
+function readPendingUpsertsMap(): Record<string, PendingCloudUpsertItem[]> {
+  try {
+    const raw = localStorage.getItem(KEYS.PENDING_CLOUD_UPSERTS);
+    if (!raw) return {};
+    const parsed = JSON.parse(raw);
+    return parsed && typeof parsed === 'object' && !Array.isArray(parsed) ? parsed : {};
+  } catch {
+    return {};
+  }
+}
+
+function writePendingUpsertsMap(map: Record<string, PendingCloudUpsertItem[]>): void {
+  try {
+    localStorage.setItem(KEYS.PENDING_CLOUD_UPSERTS, JSON.stringify(map));
+  } catch (e) {
+    console.warn('Error persisting pending cloud upserts:', e);
+  }
+}
+
+export function getPendingCloudUpserts(uid: string): PendingCloudUpsertItem[] {
+  if (!uid) return [];
+  const map = readPendingUpsertsMap();
+  const list = map[uid];
+  return Array.isArray(list) ? list : [];
+}
+
+export function addPendingCloudUpserts(
+  uid: string,
+  items: Array<{ id: string; hanzi: string }>
+): PendingCloudUpsertItem[] {
+  if (!uid || items.length === 0) return [];
+  const map = readPendingUpsertsMap();
+  const existing = Array.isArray(map[uid]) ? map[uid] : [];
+  const byHanziOrId = new Map<string, PendingCloudUpsertItem>();
+  existing.forEach((entry) => {
+    const key = entry.hanzi || entry.id;
+    if (key) byHanziOrId.set(key, entry);
+  });
+  const now = Date.now();
+  items.forEach((item) => {
+    const key = item.hanzi || item.id;
+    if (!key) return;
+    byHanziOrId.set(key, {
+      id: item.id,
+      hanzi: item.hanzi,
+      updatedAt: now,
+    });
+  });
+  const next = Array.from(byHanziOrId.values());
+  map[uid] = next;
+  writePendingUpsertsMap(map);
+  return next;
+}
+
+export function removePendingCloudUpserts(
+  uid: string,
+  items: Array<{ id?: string; hanzi?: string }>
+): void {
+  if (!uid || items.length === 0) return;
+  const map = readPendingUpsertsMap();
+  const existing = Array.isArray(map[uid]) ? map[uid] : [];
+  if (existing.length === 0) return;
+
+  const ids = new Set(items.map((i) => i.id).filter(Boolean));
+  const hanziSet = new Set(items.map((i) => i.hanzi).filter(Boolean));
+  const next = existing.filter((entry) => !ids.has(entry.id) && !hanziSet.has(entry.hanzi));
+  if (next.length === 0) {
+    delete map[uid];
+  } else {
+    map[uid] = next;
+  }
+  writePendingUpsertsMap(map);
+}
+
+export function clearPendingCloudUpserts(uid?: string): void {
+  if (!uid) {
+    try {
+      localStorage.removeItem(KEYS.PENDING_CLOUD_UPSERTS);
+    } catch {}
+    return;
+  }
+  const map = readPendingUpsertsMap();
+  if (uid in map) {
+    delete map[uid];
+    writePendingUpsertsMap(map);
+  }
+}
+
 function readCloudSyncSnapshotMap(): Record<string, CloudSyncSnapshot> {
   try {
     const raw = localStorage.getItem(KEYS.CLOUD_SYNC_SNAPSHOT);
@@ -183,6 +278,20 @@ export function saveCloudSyncSnapshot(uid: string, snapshot: CloudSyncSnapshot):
     listIds: Array.from(new Set(snapshot.listIds || [])),
     sessionIds: Array.from(new Set(snapshot.sessionIds || [])),
     syncedAt: snapshot.syncedAt || Date.now(),
+  };
+  writeCloudSyncSnapshotMap(map);
+}
+
+export function addHanziToCloudSyncSnapshot(uid: string, hanziList: string[]): void {
+  if (!uid || hanziList.length === 0) return;
+  const map = readCloudSyncSnapshotMap();
+  const prev = map[uid];
+  map[uid] = {
+    hasSyncedOnce: prev?.hasSyncedOnce ?? true,
+    charHanzi: Array.from(new Set([...(prev?.charHanzi || []), ...hanziList.filter(Boolean)])),
+    listIds: prev?.listIds || [],
+    sessionIds: prev?.sessionIds || [],
+    syncedAt: Date.now(),
   };
   writeCloudSyncSnapshotMap(map);
 }
@@ -381,26 +490,35 @@ export function saveWordLists(lists: WordList[]): void {
 
 export function addCharacter(character: Character): void {
   const chars = getCharacters();
+  const now = Date.now();
   const existingIdx = chars.findIndex((c) => c.hanzi === character.hanzi);
+  let savedChar: Character;
   if (existingIdx >= 0) {
     // Merge lists and update fields while preserving existing SRS progress
     const existing = chars[existingIdx];
     const combinedLists = Array.from(new Set([...existing.listIds, ...character.listIds]));
-    chars[existingIdx] = {
+    savedChar = {
       ...existing,
       ...character,
       id: existing.id,
-      srs: existing.srs || character.srs,
+      srs: character.srs || existing.srs,
       listIds: combinedLists,
+      updatedAt: now,
     };
+    chars[existingIdx] = savedChar;
   } else {
-    chars.unshift(character);
+    savedChar = {
+      ...character,
+      updatedAt: character.updatedAt || now,
+    };
+    chars.unshift(savedChar);
   }
   saveCharacters(chars);
-  removeDismissedCompound(character.hanzi);
+  removeDismissedCompound(savedChar.hanzi);
   const ownerUid = getStorageOwnerUid();
   if (ownerUid) {
-    removePendingCloudDeletes(ownerUid, [{ id: character.id, hanzi: character.hanzi }]);
+    removePendingCloudDeletes(ownerUid, [{ id: savedChar.id, hanzi: savedChar.hanzi }]);
+    addPendingCloudUpserts(ownerUid, [{ id: savedChar.id, hanzi: savedChar.hanzi }]);
   }
 }
 
@@ -416,6 +534,10 @@ export function removeCharacter(characterId: string, hanzi?: string): void {
   saveCharacters(chars);
   if (targetHanzi) {
     addDismissedCompound(targetHanzi);
+  }
+  const ownerUid = getStorageOwnerUid();
+  if (ownerUid) {
+    removePendingCloudUpserts(ownerUid, [{ id: characterId, hanzi: targetHanzi }]);
   }
 }
 
@@ -517,17 +639,23 @@ export function importBackupData(jsonString: string): { success: boolean; messag
       return { success: false, message: 'Dữ liệu không hợp lệ. Thiếu trường bắt buộc.' };
     }
 
-    localStorage.setItem(KEYS.CHARACTERS, JSON.stringify(data.characters));
+    const now = Date.now();
+    const stampedChars = Array.isArray(data.characters)
+      ? data.characters.map((c: any) => ({ ...c, updatedAt: now }))
+      : data.characters;
+
+    localStorage.setItem(KEYS.CHARACTERS, JSON.stringify(stampedChars));
     localStorage.setItem(KEYS.WORD_LISTS, JSON.stringify(data.wordLists));
     if (data.reviewLogs) localStorage.setItem(KEYS.REVIEW_LOGS, JSON.stringify(data.reviewLogs));
     if (data.userStats) localStorage.setItem(KEYS.USER_STATS, JSON.stringify(data.userStats));
     localStorage.removeItem(KEYS.DISMISSED_COMPOUNDS);
     const ownerUid = getStorageOwnerUid();
-    if (ownerUid && Array.isArray(data.characters)) {
-      removePendingCloudDeletes(
-        ownerUid,
-        data.characters.map((c: any) => ({ id: c?.id, hanzi: c?.hanzi }))
-      );
+    if (ownerUid && Array.isArray(stampedChars)) {
+      const items = stampedChars
+        .filter((c: any) => c && typeof c.id === 'string' && typeof c.hanzi === 'string')
+        .map((c: any) => ({ id: c.id, hanzi: c.hanzi }));
+      removePendingCloudDeletes(ownerUid, items);
+      addPendingCloudUpserts(ownerUid, items);
     }
 
     return { success: true, message: `Đã khôi phục thành công ${data.characters.length} chữ và ${data.wordLists.length} danh sách!` };
@@ -544,6 +672,7 @@ export function resetAllData(): void {
   localStorage.removeItem(KEYS.SAVED_SESSIONS);
   localStorage.removeItem(KEYS.OWNER_UID);
   localStorage.removeItem(KEYS.PENDING_CLOUD_DELETES);
+  localStorage.removeItem(KEYS.PENDING_CLOUD_UPSERTS);
   localStorage.removeItem(KEYS.CLOUD_SYNC_SNAPSHOT);
   localStorage.removeItem(KEYS.DISMISSED_COMPOUNDS);
   initializeStorage();

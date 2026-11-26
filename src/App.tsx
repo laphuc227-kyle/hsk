@@ -45,8 +45,12 @@ import {
   getPendingCloudDeletes,
   addPendingCloudDelete,
   removePendingCloudDeletes,
+  getPendingCloudUpserts,
+  addPendingCloudUpserts,
+  removePendingCloudUpserts,
   getCloudSyncSnapshot,
   saveCloudSyncSnapshot,
+  addHanziToCloudSyncSnapshot,
   removeHanziFromCloudSyncSnapshot,
   getDismissedCompounds,
   isUntouchedStarterCharacter,
@@ -127,6 +131,9 @@ export default function App() {
   const activeViewRef = useRef(activeView);
   activeViewRef.current = activeView;
   const lastAutoSyncAtRef = useRef<number>(0);
+  const activeSyncPromiseRef = useRef<Promise<void> | null>(null);
+  const resyncRequestRef = useRef<{ userId: string; silent: boolean } | null>(null);
+  const pendingUploadPromiseRef = useRef<Promise<void> | null>(null);
   const cloudSessionTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
   const pendingCloudSessionRef = useRef<SavedStudySession | null>(null);
   const cloudStatsTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
@@ -259,7 +266,11 @@ export default function App() {
     };
   }, []);
 
-  const pickFresherCharacter = (cloudChar: Character, localChar: Character) => {
+  const pickFresherCharacter = (
+    cloudChar: Character,
+    localChar: Character,
+    preferLocalTie: boolean = false
+  ) => {
     const cloudReviews = (cloudChar.srs?.totalCorrect || 0) + (cloudChar.srs?.totalIncorrect || 0);
     const localReviews = (localChar.srs?.totalCorrect || 0) + (localChar.srs?.totalIncorrect || 0);
     const cloudTime = cloudChar.srs?.lastReviewedAt || cloudChar.updatedAt || 0;
@@ -270,7 +281,9 @@ export default function App() {
     );
 
     const localIsAhead =
-      localReviews > cloudReviews || (localReviews === cloudReviews && localTime > cloudTime);
+      localReviews > cloudReviews ||
+      (localReviews === cloudReviews &&
+        (localTime > cloudTime || (preferLocalTie && localTime >= cloudTime)));
 
     const base = localIsAhead ? localChar : cloudChar;
     const listUpdated = mergedListIds.length > (cloudChar.listIds?.length || 0);
@@ -281,11 +294,11 @@ export default function App() {
         id: cloudChar.id || localChar.id,
         listIds: mergedListIds,
       },
-      shouldUpload: localIsAhead || listUpdated,
+      shouldUpload: localIsAhead || listUpdated || preferLocalTie,
     };
   };
 
-  const syncCloudData = async (userId: string, silent: boolean = false) => {
+  const runSyncCloudDataInternal = async (userId: string, silent: boolean = false) => {
     lastAutoSyncAtRef.current = Date.now();
     setStorageOwnerUid(userId);
     setIsSyncing(true);
@@ -294,6 +307,11 @@ export default function App() {
     }
 
     try {
+      // Wait for any in-flight refreshAllData upload before reading Cloud so we don't race against ourselves
+      if (pendingUploadPromiseRef.current) {
+        await pendingUploadPromiseRef.current.catch(() => {});
+      }
+
       // Flush any offline/queued deletions before fetching Cloud state so deleted words never resurrect
       await flushPendingCloudDeletes(userId);
 
@@ -315,6 +333,9 @@ export default function App() {
       const localStats = getUserStats();
       const localSessions = getSavedStudySessions();
       const snapshot = getCloudSyncSnapshot(userId);
+      const pendingUpserts = getPendingCloudUpserts(userId);
+      const pendingUpsertIds = new Set(pendingUpserts.map((p) => p.id).filter(Boolean));
+      const pendingUpsertHanzi = new Set(pendingUpserts.map((p) => p.hanzi).filter(Boolean));
 
       const isCloudCharsListsStatsEmpty =
         cloudChars.length === 0 && cloudLists.length === 0 && cloudStats === null;
@@ -327,7 +348,7 @@ export default function App() {
         if (cloudSessions.length === 0) {
           handledEmptyCloud = true;
 
-          if (snapshot?.hasSyncedOnce) {
+          if (snapshot?.hasSyncedOnce && pendingUpserts.length === 0) {
             // Cloud was reset on another device/browser -> wipe stale local state instead of re-uploading
             resetAllData();
             setStorageOwnerUid(userId);
@@ -350,7 +371,7 @@ export default function App() {
               showToast('Dữ liệu Cloud đã được đặt lại. Đã cập nhật thiết bị về mặc định!', 'info', 4000);
             }
           } else {
-            // First-time Cloud backup for a new account
+            // First-time Cloud backup for a new account (or local has unuploaded pendingUpserts)
             const sessionMap = new Map<string, SavedStudySession>();
             localSessions.forEach((ls) => {
               const existing = sessionMap.get(ls.id);
@@ -361,8 +382,16 @@ export default function App() {
             const mergedSessions = replaceSavedStudySessions(Array.from(sessionMap.values()));
             setSavedSessions(mergedSessions);
 
-            await Promise.all([
-              localChars.length > 0 ? saveCharactersBatchToCloud(userId, localChars) : Promise.resolve(),
+            const [charRes, listsRes, statsRes, sessionsRes] = await Promise.allSettled([
+              localChars.length > 0
+                ? saveCharactersBatchToCloud(userId, localChars)
+                : Promise.resolve({
+                    attempted: 0,
+                    succeededIds: [] as string[],
+                    succeededHanzi: [] as string[],
+                    failedDocs: [] as Array<{ id: string; hanzi: string; code: string; reason: string }>,
+                    skippedInvalid: [] as Array<{ id: string; hanzi: string }>,
+                  }),
               localLists.length > 0 ? saveWordListsToCloud(userId, localLists) : Promise.resolve(),
               saveUserStatsToCloud(userId, localStats),
               mergedSessions.length > 0
@@ -370,17 +399,49 @@ export default function App() {
                 : Promise.resolve(),
             ]);
 
+            if (charRes.status === 'rejected') {
+              throw charRes.reason;
+            }
+
+            const uploadSummary = charRes.value;
+            if (uploadSummary.succeededHanzi.length > 0) {
+              removePendingCloudUpserts(
+                userId,
+                uploadSummary.succeededIds.map((id, idx) => ({
+                  id,
+                  hanzi: uploadSummary.succeededHanzi[idx],
+                }))
+              );
+            }
+
+            if (listsRes.status === 'rejected') {
+              console.warn('[CloudSync] Initial wordLists upload warning:', listsRes.reason);
+            }
+            if (statsRes.status === 'rejected') {
+              console.warn('[CloudSync] Initial stats upload warning:', statsRes.reason);
+            }
+            if (sessionsRes.status === 'rejected') {
+              console.warn('[CloudSync] Initial sessions upload warning:', sessionsRes.reason);
+            }
+
             saveCloudSyncSnapshot(userId, {
               hasSyncedOnce: true,
-              charHanzi: localChars.map((c) => c.hanzi),
-              listIds: localLists.map((l) => l.id),
-              sessionIds: mergedSessions.map((s) => s.id),
+              charHanzi: uploadSummary.succeededHanzi,
+              listIds: listsRes.status === 'fulfilled' ? localLists.map((l) => l.id) : [],
+              sessionIds: sessionsRes.status === 'fulfilled' ? mergedSessions.map((s) => s.id) : [],
               syncedAt: Date.now(),
             });
 
-            if (!silent) {
+            const failedCount = uploadSummary.failedDocs.length + uploadSummary.skippedInvalid.length;
+            if (failedCount > 0) {
               showToast(
-                `Đã sao lưu ${localChars.length} từ vựng & tiến độ lên tài khoản Google!`,
+                `Đã sao lưu ${uploadSummary.succeededHanzi.length} từ lên Cloud, còn ${failedCount} từ lỗi chưa đồng bộ được.`,
+                'error',
+                5000
+              );
+            } else if (!silent) {
+              showToast(
+                `Đã sao lưu ${uploadSummary.succeededHanzi.length} từ vựng & tiến độ lên tài khoản Google!`,
                 'success',
                 4000
               );
@@ -389,33 +450,47 @@ export default function App() {
         }
       }
 
-      // Case 2: Cloud already has data -> Smart two-way merge respecting Cloud deletions & resets
+      // Case 2: Cloud already has data -> Smart two-way merge respecting Cloud deletions & pending local upserts
       if (!handledEmptyCloud) {
         const syncedHanziSet = new Set(snapshot?.charHanzi || []);
         const syncedListIdSet = new Set(snapshot?.listIds || []);
         const syncedSessionIdSet = new Set(snapshot?.sessionIds || []);
 
         const cloudByHanzi = new Map<string, Character>();
-        cloudChars.forEach((c) => cloudByHanzi.set(c.hanzi, c));
+        cloudChars.forEach((c) => {
+          const prev = cloudByHanzi.get(c.hanzi);
+          if (!prev) {
+            cloudByHanzi.set(c.hanzi, c);
+          } else {
+            cloudByHanzi.set(c.hanzi, pickFresherCharacter(prev, c).winner);
+          }
+        });
 
         const mergedByHanzi = new Map<string, Character>(cloudByHanzi);
         const toUploadChars: Character[] = [];
 
         localChars.forEach((lc) => {
+          const isPendingLocalUpsert =
+            pendingUpsertIds.has(lc.id) || pendingUpsertHanzi.has(lc.hanzi);
           const existingCloud = cloudByHanzi.get(lc.hanzi);
           if (!existingCloud) {
-            // Do NOT resurrect words that were previously synced and then deleted on Cloud
-            if (syncedHanziSet.has(lc.hanzi)) {
+            // Do NOT resurrect words that were genuinely synced before and deleted on another device,
+            // UNLESS this browser explicitly added/edited them locally since last confirmed sync.
+            if (!isPendingLocalUpsert && syncedHanziSet.has(lc.hanzi)) {
               return;
             }
             // Do NOT re-upload untouched starter words from a fresh/Incognito browser onto an existing Cloud account
-            if (isUntouchedStarterCharacter(lc)) {
+            if (!isPendingLocalUpsert && isUntouchedStarterCharacter(lc)) {
               return;
             }
             mergedByHanzi.set(lc.hanzi, lc);
             toUploadChars.push(lc);
           } else {
-            const { winner, shouldUpload } = pickFresherCharacter(existingCloud, lc);
+            const { winner, shouldUpload } = pickFresherCharacter(
+              existingCloud,
+              lc,
+              isPendingLocalUpsert
+            );
             mergedByHanzi.set(lc.hanzi, winner);
             if (shouldUpload) {
               toUploadChars.push(winner);
@@ -431,7 +506,7 @@ export default function App() {
           return mergedChars.find((c) => c.id === prev.id || c.hanzi === prev.hanzi) || null;
         });
 
-        // Merge Word Lists
+        // Merge Word Lists (preserve Cloud createdAt for existing lists)
         const listMap = new Map<string, WordList>();
         cloudLists.forEach((l) => listMap.set(l.id, l));
         const toUploadLists: WordList[] = [];
@@ -441,7 +516,7 @@ export default function App() {
               return;
             }
             listMap.set(ll.id, ll);
-            if (!isPredefinedWordList(ll) || (cloudLists.length === 0 && !snapshot?.hasSyncedOnce)) {
+            if (!isPredefinedWordList(ll) || cloudLists.length === 0) {
               toUploadLists.push(ll);
             }
           }
@@ -513,9 +588,17 @@ export default function App() {
           cloudStats.totalSaved !== mergedStats.totalSaved ||
           cloudStats.totalMastered !== mergedStats.totalMastered;
 
-        // Push any genuine local-newer updates back up to Cloud
-        await Promise.all([
-          toUploadChars.length > 0 ? saveCharactersBatchToCloud(userId, toUploadChars) : Promise.resolve(),
+        // Push any genuine local-newer updates back up to Cloud (characters first & isolated from secondary failures)
+        const [charRes, listsRes, statsRes, sessionsRes] = await Promise.allSettled([
+          toUploadChars.length > 0
+            ? saveCharactersBatchToCloud(userId, toUploadChars)
+            : Promise.resolve({
+                attempted: 0,
+                succeededIds: [] as string[],
+                succeededHanzi: [] as string[],
+                failedDocs: [] as Array<{ id: string; hanzi: string; code: string; reason: string }>,
+                skippedInvalid: [] as Array<{ id: string; hanzi: string }>,
+              }),
           toUploadLists.length > 0 ? saveWordListsToCloud(userId, toUploadLists) : Promise.resolve(),
           shouldUploadStats ? saveUserStatsToCloud(userId, mergedStats) : Promise.resolve(),
           sessionsToUpload.length > 0
@@ -523,15 +606,64 @@ export default function App() {
             : Promise.resolve(),
         ]);
 
+        if (charRes.status === 'rejected') {
+          throw charRes.reason;
+        }
+
+        const charSummary = charRes.value;
+        if (charSummary.succeededHanzi.length > 0) {
+          removePendingCloudUpserts(
+            userId,
+            charSummary.succeededIds.map((id, idx) => ({
+              id,
+              hanzi: charSummary.succeededHanzi[idx],
+            }))
+          );
+        }
+
+        // Also clear any pendingUpserts that already match Cloud and did not need re-upload
+        const uploadedSet = new Set(toUploadChars.map((c) => c.hanzi));
+        const alreadyInCloudNotNeedingUpload = pendingUpserts.filter(
+          (p) => !uploadedSet.has(p.hanzi) && cloudByHanzi.has(p.hanzi)
+        );
+        if (alreadyInCloudNotNeedingUpload.length > 0) {
+          removePendingCloudUpserts(userId, alreadyInCloudNotNeedingUpload);
+        }
+
+        if (listsRes.status === 'rejected') {
+          console.warn('[CloudSync] WordLists upload warning:', listsRes.reason);
+        }
+        if (statsRes.status === 'rejected') {
+          console.warn('[CloudSync] Stats upload warning:', statsRes.reason);
+        }
+        if (sessionsRes.status === 'rejected') {
+          console.warn('[CloudSync] Sessions upload warning:', sessionsRes.reason);
+        }
+
+        // Only record characters confirmed on Cloud in cloudSyncSnapshot
+        const confirmedCloudHanzi = Array.from(
+          new Set([
+            ...Array.from(cloudByHanzi.keys()),
+            ...charSummary.succeededHanzi,
+          ])
+        );
+
         saveCloudSyncSnapshot(userId, {
           hasSyncedOnce: true,
-          charHanzi: mergedChars.map((c) => c.hanzi),
+          charHanzi: confirmedCloudHanzi,
           listIds: mergedLists.map((l) => l.id),
           sessionIds: mergedSessions.map((s) => s.id),
           syncedAt: Date.now(),
         });
 
-        if (!silent) {
+        const failedCount = charSummary.failedDocs.length + charSummary.skippedInvalid.length;
+        if (failedCount > 0) {
+          showToast(
+            `Đồng bộ được ${confirmedCloudHanzi.length} từ, còn ${failedCount} từ chưa đẩy lên Cloud được (sẽ tự thử lại).`,
+            'error',
+            5000
+          );
+        } else if (!silent) {
           const draftNote =
             mergedSessions.length > 0
               ? ` • ${mergedSessions.length} bài đang làm dở`
@@ -545,12 +677,45 @@ export default function App() {
       }
     } catch (err: any) {
       console.error('Cloud Sync failed:', err);
-      if (!silent) {
-        showToast('Đồng bộ đám mây thất bại. Vui lòng kiểm tra lại mạng!', 'error', 4000);
+      const isOffline = typeof navigator !== 'undefined' && navigator.onLine === false;
+      if (!silent || !isOffline || err?.code === 'permission-denied') {
+        const code = err?.code ? ` (${err.code})` : '';
+        showToast(
+          `Đồng bộ đám mây thất bại${code}. Dữ liệu trên máy vẫn được giữ an toàn để thử lại!`,
+          'error',
+          5000
+        );
       }
     } finally {
       setIsSyncing(false);
     }
+  };
+
+  const syncCloudData = (userId: string, silent: boolean = false): Promise<void> => {
+    if (activeSyncPromiseRef.current) {
+      const prevReq = resyncRequestRef.current;
+      resyncRequestRef.current = {
+        userId,
+        silent: prevReq ? prevReq.silent && silent : silent,
+      };
+      return activeSyncPromiseRef.current;
+    }
+
+    const p = (async () => {
+      try {
+        await runSyncCloudDataInternal(userId, silent);
+      } finally {
+        activeSyncPromiseRef.current = null;
+        const followUp = resyncRequestRef.current;
+        resyncRequestRef.current = null;
+        if (followUp && currentUserRef.current?.uid === followUp.userId) {
+          await syncCloudData(followUp.userId, followUp.silent);
+        }
+      }
+    })();
+
+    activeSyncPromiseRef.current = p;
+    return p;
   };
 
   const [authHelpModal, setAuthHelpModal] = useState<{
@@ -638,6 +803,20 @@ export default function App() {
 
       const uid = currentUserRef.current?.uid;
       if (uid && (typeof navigator === 'undefined' || navigator.onLine !== false)) {
+        if (pendingUploadPromiseRef.current) {
+          await pendingUploadPromiseRef.current.catch(() => {});
+        }
+        const remainingUpserts = getPendingCloudUpserts(uid);
+        if (remainingUpserts.length > 0) {
+          const upsertIds = new Set(remainingUpserts.map((u) => u.id).filter(Boolean));
+          const upsertHanzi = new Set(remainingUpserts.map((u) => u.hanzi).filter(Boolean));
+          const toPush = getCharacters().filter(
+            (c) => upsertIds.has(c.id) || upsertHanzi.has(c.hanzi)
+          );
+          if (toPush.length > 0) {
+            await saveCharactersBatchToCloud(uid, toPush).catch(console.warn);
+          }
+        }
         await flushPendingCloudDeletes(uid);
       }
 
@@ -661,12 +840,15 @@ export default function App() {
     }
   };
 
-  const refreshAllData = () => {
+  const refreshAllData = async (): Promise<void> => {
     const uid = currentUserRef.current?.uid;
     const loadedChars = getCharacters();
     // Auto-sync 100% learned review compound words into all vocabulary (skipping deleted compounds)
     const dismissed = new Set(getDismissedCompounds());
-    const { updatedCharacters } = syncLearnedCompoundWords(loadedChars, dismissed);
+    const { updatedCharacters, addedCount: autoCompoundAdded } = syncLearnedCompoundWords(
+      loadedChars,
+      dismissed
+    );
     let categorized = autoCategorizeCharacters(updatedCharacters);
     if (uid) {
       const pending = getPendingCloudDeletes(uid);
@@ -683,22 +865,105 @@ export default function App() {
     const latestSessions = getSavedStudySessions();
     setSavedSessions(latestSessions);
 
-    // If logged in, automatically push updates to Cloud
+    // If logged in, push pending/changed updates to Cloud and only confirm snapshot after Cloud succeeds
     if (uid) {
-      saveCharactersBatchToCloud(uid, categorized).catch(console.warn);
-      saveWordListsToCloud(uid, lists).catch(console.warn);
-      saveUserStatsToCloud(uid, latestStats).catch(console.warn);
-      if (latestSessions.length > 0) {
-        saveSavedSessionsBatchToCloud(uid, latestSessions).catch(console.warn);
-      }
       const existingSnap = getCloudSyncSnapshot(uid);
-      saveCloudSyncSnapshot(uid, {
-        hasSyncedOnce: existingSnap?.hasSyncedOnce ?? true,
-        charHanzi: categorized.map((c) => c.hanzi),
-        listIds: lists.map((l) => l.id),
-        sessionIds: latestSessions.map((s) => s.id),
-        syncedAt: Date.now(),
+      const syncedHanziSet = new Set(existingSnap?.charHanzi || []);
+      const syncedListIdSet = new Set(existingSnap?.listIds || []);
+      const pendingUpserts = getPendingCloudUpserts(uid);
+      const pendingIdSet = new Set(pendingUpserts.map((p) => p.id).filter(Boolean));
+      const pendingHanziSet = new Set(pendingUpserts.map((p) => p.hanzi).filter(Boolean));
+
+      const charsToUpload = categorized.filter((c) => {
+        if (pendingIdSet.has(c.id) || pendingHanziSet.has(c.hanzi)) return true;
+        if (!existingSnap?.hasSyncedOnce) return !isUntouchedStarterCharacter(c);
+        if (autoCompoundAdded > 0 && !syncedHanziSet.has(c.hanzi)) return true;
+        if (!syncedHanziSet.has(c.hanzi) && !isUntouchedStarterCharacter(c)) return true;
+        return Boolean(c.updatedAt && c.updatedAt > existingSnap.syncedAt);
       });
+
+      if (charsToUpload.length > 0) {
+        addPendingCloudUpserts(
+          uid,
+          charsToUpload.map((c) => ({ id: c.id, hanzi: c.hanzi }))
+        );
+      }
+
+      const listsToUpload = lists.filter(
+        (l) => !isPredefinedWordList(l) && (!existingSnap?.hasSyncedOnce || !syncedListIdSet.has(l.id))
+      );
+
+      const uploadTask = (async () => {
+        try {
+          const [charRes, listsRes, statsRes, sessionsRes] = await Promise.allSettled([
+            charsToUpload.length > 0
+              ? saveCharactersBatchToCloud(uid, charsToUpload)
+              : Promise.resolve({
+                  attempted: 0,
+                  succeededIds: [] as string[],
+                  succeededHanzi: [] as string[],
+                  failedDocs: [] as Array<{ id: string; hanzi: string; code: string; reason: string }>,
+                  skippedInvalid: [] as Array<{ id: string; hanzi: string }>,
+                }),
+            listsToUpload.length > 0 ? saveWordListsToCloud(uid, listsToUpload) : Promise.resolve(),
+            saveUserStatsToCloud(uid, latestStats),
+            latestSessions.length > 0
+              ? saveSavedSessionsBatchToCloud(uid, latestSessions)
+              : Promise.resolve(),
+          ]);
+
+          if (listsRes.status === 'rejected') {
+            console.warn('[CloudSync] WordLists background upload warning:', listsRes.reason);
+          }
+          if (statsRes.status === 'rejected') {
+            console.warn('[CloudSync] Stats background upload warning:', statsRes.reason);
+          }
+          if (sessionsRes.status === 'rejected') {
+            console.warn('[CloudSync] Sessions background upload warning:', sessionsRes.reason);
+          }
+
+          if (charRes.status === 'rejected') {
+            throw charRes.reason;
+          }
+
+          const summary = charRes.value;
+          if (summary.succeededHanzi.length > 0) {
+            removePendingCloudUpserts(
+              uid,
+              summary.succeededIds.map((id, idx) => ({
+                id,
+                hanzi: summary.succeededHanzi[idx],
+              }))
+            );
+            addHanziToCloudSyncSnapshot(uid, summary.succeededHanzi);
+          }
+
+          const failedCount = summary.failedDocs.length + summary.skippedInvalid.length;
+          if (failedCount > 0) {
+            showToast(
+              `Đã lưu trên máy, nhưng ${failedCount} từ chưa đồng bộ được lên Cloud. Bấm Đồng bộ để thử lại.`,
+              'error',
+              5000
+            );
+          }
+        } catch (err: any) {
+          console.error('[CloudSync] Background upload failed:', err);
+          showToast(
+            'Đã lưu trên máy nhưng đồng bộ lên Cloud thất bại. Bấm Đồng bộ để thử lại!',
+            'error',
+            5000
+          );
+        }
+      })();
+
+      pendingUploadPromiseRef.current = uploadTask;
+      try {
+        await uploadTask;
+      } finally {
+        if (pendingUploadPromiseRef.current === uploadTask) {
+          pendingUploadPromiseRef.current = null;
+        }
+      }
     }
   };
 
@@ -796,7 +1061,12 @@ export default function App() {
   const handleCharacterReviewedCloud = (updatedChar: Character) => {
     const uid = currentUserRef.current?.uid;
     if (!uid) return;
-    saveCharacterToCloud(uid, updatedChar).catch(console.warn);
+    saveCharacterToCloud(uid, updatedChar)
+      .then(() => {
+        removePendingCloudUpserts(uid, [{ id: updatedChar.id, hanzi: updatedChar.hanzi }]);
+        addHanziToCloudSyncSnapshot(uid, [updatedChar.hanzi]);
+      })
+      .catch(console.warn);
 
     if (cloudStatsTimerRef.current) clearTimeout(cloudStatsTimerRef.current);
     cloudStatsTimerRef.current = setTimeout(() => {

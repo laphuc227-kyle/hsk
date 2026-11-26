@@ -26,7 +26,7 @@ interface WordListManagerProps {
   onResumeSession?: (session: SavedStudySession) => void;
   onDeleteSavedSession?: (sessionId: string) => void;
   onSelectList: (listId: string | null) => void;
-  onRefreshData: () => void;
+  onRefreshData: () => void | Promise<void>;
   onDeleteCharacter?: (character: Character) => void | Promise<void>;
   onSelectCharacter: (character: Character) => void;
   onStartSession?: (mode: StudySessionMode, listId?: string) => void;
@@ -579,7 +579,7 @@ export const WordListManager: React.FC<WordListManagerProps> = ({
       const unresolvedList = Array.from(new Set([...unresolvedFromServer, ...skippedUnresolved]));
 
       if (addedCount > 0) {
-        onRefreshData();
+        await Promise.resolve(onRefreshData());
       }
 
       if (unresolvedList.length > 0) {
@@ -639,6 +639,7 @@ export const WordListManager: React.FC<WordListManagerProps> = ({
     };
 
     addCharacter(newChar);
+    onRefreshData();
 
     setAddStatusMessage(`Thành công! Đã thêm từ "${hanziTrimmed}" vào danh sách.`);
     setTimeout(() => {
@@ -651,7 +652,6 @@ export const WordListManager: React.FC<WordListManagerProps> = ({
       setManualMnemonic('');
       setAddStatusMessage('');
       setIsProcessingAdd(false);
-      onRefreshData();
     }, 600);
   };
 
