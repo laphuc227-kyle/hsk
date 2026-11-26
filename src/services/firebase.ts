@@ -151,14 +151,468 @@ export async function loadCharactersFromCloud(userId: string): Promise<Character
   }
 }
 
+const CHARACTER_REQUIRED_KEYS = [
+  'id',
+  'userId',
+  'hanzi',
+  'pinyin',
+  'hanViet',
+  'meaning',
+  'radical',
+  'strokeCount',
+  'listIds',
+  'createdAt',
+  'updatedAt',
+  'srs',
+] as const;
+
+const CHARACTER_ALLOWED_KEYS = new Set<string>([
+  'id',
+  'userId',
+  'hanzi',
+  'pinyin',
+  'hanViet',
+  'meaning',
+  'radical',
+  'strokeCount',
+  'components',
+  'mnemonic',
+  'aiMnemonics',
+  'hskLevel',
+  'customNotes',
+  'examples',
+  'compoundWords',
+  'listIds',
+  'createdAt',
+  'updatedAt',
+  'srs',
+]);
+
+const SRS_REQUIRED_KEYS = [
+  'easinessFactor',
+  'interval',
+  'repetitions',
+  'nextReviewDate',
+  'totalCorrect',
+  'totalIncorrect',
+  'consecutiveCorrect',
+  'masteryLevel',
+  'difficultyScore',
+] as const;
+
+const SRS_ALLOWED_KEYS = new Set<string>([
+  'easinessFactor',
+  'interval',
+  'repetitions',
+  'nextReviewDate',
+  'totalCorrect',
+  'totalIncorrect',
+  'consecutiveCorrect',
+  'lastReviewedAt',
+  'masteryLevel',
+  'difficultyScore',
+]);
+
+export interface CharacterValidationResult {
+  isValid: boolean;
+  violatedFields: string[];
+  reasons: string[];
+}
+
+function isPlainObject(val: unknown): val is Record<string, any> {
+  return val !== null && typeof val === 'object' && !Array.isArray(val);
+}
+
+function isFiniteNum(val: unknown): val is number {
+  return typeof val === 'number' && Number.isFinite(val);
+}
+
+function isValidCharIdClient(id: unknown): id is string {
+  return typeof id === 'string' && id.length > 0 && id.length <= 128 && !/[/\s]/.test(id);
+}
+
+function truncateStringSafe(val: string, maxLen: number): string {
+  if (val.length <= maxLen) return val;
+  let cut = val.slice(0, maxLen);
+  const lastCode = cut.charCodeAt(cut.length - 1);
+  if (lastCode >= 0xd800 && lastCode <= 0xdbff) {
+    cut = cut.slice(0, -1);
+  }
+  return cut;
+}
+
+function clampNum(val: number, min: number, max: number): number {
+  return Math.min(max, Math.max(min, val));
+}
+
+/**
+ * Mirrors firestore.rules `isValidCharId`, `isValidCharacter`, and `isValidSrs` verbatim
+ * so client batch/single writes catch violations before hitting Firestore.
+ */
+export function validateCharacterForCloud(
+  data: unknown,
+  userId: string,
+  characterId?: string
+): CharacterValidationResult {
+  const violatedSet = new Set<string>();
+  const reasons: string[] = [];
+
+  const fail = (field: string, reason: string) => {
+    violatedSet.add(field);
+    reasons.push(`${field}: ${reason}`);
+  };
+
+  if (!isPlainObject(data)) {
+    return {
+      isValid: false,
+      violatedFields: ['root'],
+      reasons: ['root: dữ liệu không phải object hợp lệ'],
+    };
+  }
+
+  const targetId = characterId !== undefined ? characterId : data.id;
+  if (!isValidCharIdClient(targetId)) {
+    fail('id', 'id phải là chuỗi 1..128 ký tự và không chứa khoảng trắng hoặc dấu "/"');
+  }
+
+  for (const reqKey of CHARACTER_REQUIRED_KEYS) {
+    if (!(reqKey in data)) {
+      fail(reqKey, `thiếu trường bắt buộc '${reqKey}'`);
+    }
+  }
+
+  for (const key of Object.keys(data)) {
+    if (!CHARACTER_ALLOWED_KEYS.has(key)) {
+      fail(key, `khóa '${key}' không nằm trong danh sách allowed keys của firestore.rules`);
+    }
+  }
+
+  if ('id' in data) {
+    if (!isValidCharIdClient(data.id)) {
+      fail('id', 'id không hợp lệ (rỗng, > 128 ký tự hoặc chứa khoảng trắng / "/")');
+    } else if (characterId !== undefined && data.id !== characterId) {
+      fail('id', `data.id ('${data.id}') phải khớp với documentId ('${characterId}')`);
+    }
+  }
+
+  if ('userId' in data && (typeof data.userId !== 'string' || data.userId !== userId)) {
+    fail('userId', `userId phải là chuỗi khớp UID '${userId}'`);
+  }
+
+  if ('hanzi' in data) {
+    if (typeof data.hanzi !== 'string' || data.hanzi.length === 0 || data.hanzi.length > 100) {
+      fail('hanzi', 'hanzi phải là chuỗi có độ dài 1..100');
+    }
+  }
+
+  if ('pinyin' in data && (typeof data.pinyin !== 'string' || data.pinyin.length > 200)) {
+    fail('pinyin', 'pinyin phải là chuỗi dài <= 200');
+  }
+
+  if ('hanViet' in data && (typeof data.hanViet !== 'string' || data.hanViet.length > 200)) {
+    fail('hanViet', 'hanViet phải là chuỗi dài <= 200');
+  }
+
+  if ('meaning' in data && (typeof data.meaning !== 'string' || data.meaning.length > 1000)) {
+    fail('meaning', 'meaning phải là chuỗi dài <= 1000');
+  }
+
+  if ('radical' in data && (typeof data.radical !== 'string' || data.radical.length > 100)) {
+    fail('radical', 'radical phải là chuỗi dài <= 100');
+  }
+
+  if ('strokeCount' in data) {
+    if (!isFiniteNum(data.strokeCount) || data.strokeCount < 0 || data.strokeCount > 200) {
+      fail('strokeCount', 'strokeCount phải là số trong khoảng 0..200');
+    }
+  }
+
+  if ('components' in data && data.components !== null) {
+    if (typeof data.components !== 'string' || data.components.length > 500) {
+      fail('components', 'components phải là chuỗi dài <= 500 hoặc null');
+    }
+  }
+
+  if ('mnemonic' in data && data.mnemonic !== null) {
+    if (typeof data.mnemonic !== 'string' || data.mnemonic.length > 2000) {
+      fail('mnemonic', 'mnemonic phải là chuỗi dài <= 2000 hoặc null');
+    }
+  }
+
+  if ('aiMnemonics' in data && data.aiMnemonics !== null) {
+    if (
+      !Array.isArray(data.aiMnemonics) ||
+      data.aiMnemonics.length > 10 ||
+      !data.aiMnemonics.every((item) => isPlainObject(item))
+    ) {
+      fail('aiMnemonics', 'aiMnemonics phải là mảng tối đa 10 object hoặc null');
+    }
+  }
+
+  if ('hskLevel' in data && data.hskLevel !== null) {
+    if (!isFiniteNum(data.hskLevel) || data.hskLevel < 0 || data.hskLevel > 9) {
+      fail('hskLevel', 'hskLevel phải là số trong khoảng 0..9 hoặc null');
+    }
+  }
+
+  if ('customNotes' in data && data.customNotes !== null) {
+    if (typeof data.customNotes !== 'string' || data.customNotes.length > 2000) {
+      fail('customNotes', 'customNotes phải là chuỗi dài <= 2000 hoặc null');
+    }
+  }
+
+  if ('examples' in data && data.examples !== null) {
+    if (
+      !Array.isArray(data.examples) ||
+      data.examples.length > 20 ||
+      !data.examples.every((item) => isPlainObject(item))
+    ) {
+      fail('examples', 'examples phải là mảng tối đa 20 object hoặc null');
+    }
+  }
+
+  if ('compoundWords' in data && data.compoundWords !== null) {
+    if (
+      !Array.isArray(data.compoundWords) ||
+      data.compoundWords.length > 30 ||
+      !data.compoundWords.every((item) => isPlainObject(item))
+    ) {
+      fail('compoundWords', 'compoundWords phải là mảng tối đa 30 object hoặc null');
+    }
+  }
+
+  if ('listIds' in data) {
+    if (
+      !Array.isArray(data.listIds) ||
+      data.listIds.length > 50 ||
+      !data.listIds.every((item) => typeof item === 'string')
+    ) {
+      fail('listIds', 'listIds phải là mảng chuỗi tối đa 50 phần tử');
+    }
+  }
+
+  if ('createdAt' in data && (!isFiniteNum(data.createdAt) || data.createdAt < 0)) {
+    fail('createdAt', 'createdAt phải là số >= 0');
+  }
+
+  if ('updatedAt' in data && (!isFiniteNum(data.updatedAt) || data.updatedAt <= 0)) {
+    fail('updatedAt', 'updatedAt phải là số > 0');
+  }
+
+  if ('srs' in data) {
+    const srs = data.srs;
+    if (!isPlainObject(srs)) {
+      fail('srs', 'srs phải là object hợp lệ');
+    } else {
+      for (const reqSrsKey of SRS_REQUIRED_KEYS) {
+        if (!(reqSrsKey in srs)) {
+          fail(`srs.${reqSrsKey}`, `thiếu trường bắt buộc 'srs.${reqSrsKey}'`);
+        }
+      }
+      for (const srsKey of Object.keys(srs)) {
+        if (!SRS_ALLOWED_KEYS.has(srsKey)) {
+          fail(`srs.${srsKey}`, `khóa 'srs.${srsKey}' không được phép`);
+        }
+      }
+      if ('easinessFactor' in srs && (!isFiniteNum(srs.easinessFactor) || srs.easinessFactor < 1.0 || srs.easinessFactor > 10.0)) {
+        fail('srs.easinessFactor', 'easinessFactor phải nằm trong [1.0, 10.0]');
+      }
+      if ('interval' in srs && (!isFiniteNum(srs.interval) || srs.interval < 0 || srs.interval > 100000)) {
+        fail('srs.interval', 'interval phải nằm trong [0, 100000]');
+      }
+      if ('repetitions' in srs && (!isFiniteNum(srs.repetitions) || srs.repetitions < 0 || srs.repetitions > 100000)) {
+        fail('srs.repetitions', 'repetitions phải nằm trong [0, 100000]');
+      }
+      if ('nextReviewDate' in srs && (!isFiniteNum(srs.nextReviewDate) || srs.nextReviewDate < 0)) {
+        fail('srs.nextReviewDate', 'nextReviewDate phải >= 0');
+      }
+      if ('totalCorrect' in srs && (!isFiniteNum(srs.totalCorrect) || srs.totalCorrect < 0 || srs.totalCorrect > 1000000)) {
+        fail('srs.totalCorrect', 'totalCorrect phải nằm trong [0, 1000000]');
+      }
+      if ('totalIncorrect' in srs && (!isFiniteNum(srs.totalIncorrect) || srs.totalIncorrect < 0 || srs.totalIncorrect > 1000000)) {
+        fail('srs.totalIncorrect', 'totalIncorrect phải nằm trong [0, 1000000]');
+      }
+      if ('consecutiveCorrect' in srs && (!isFiniteNum(srs.consecutiveCorrect) || srs.consecutiveCorrect < 0 || srs.consecutiveCorrect > 100000)) {
+        fail('srs.consecutiveCorrect', 'consecutiveCorrect phải nằm trong [0, 100000]');
+      }
+      if (
+        'lastReviewedAt' in srs &&
+        srs.lastReviewedAt !== null &&
+        (!isFiniteNum(srs.lastReviewedAt) || srs.lastReviewedAt < 0 || srs.lastReviewedAt > 9999999999999)
+      ) {
+        fail('srs.lastReviewedAt', 'lastReviewedAt phải nằm trong [0, 9999999999999] hoặc null');
+      }
+      if ('masteryLevel' in srs && (!isFiniteNum(srs.masteryLevel) || srs.masteryLevel < 0 || srs.masteryLevel > 100)) {
+        fail('srs.masteryLevel', 'masteryLevel phải nằm trong [0, 100]');
+      }
+      if ('difficultyScore' in srs && (!isFiniteNum(srs.difficultyScore) || srs.difficultyScore < 0 || srs.difficultyScore > 100)) {
+        fail('srs.difficultyScore', 'difficultyScore phải nằm trong [0, 100]');
+      }
+    }
+  }
+
+  return {
+    isValid: violatedSet.size === 0,
+    violatedFields: Array.from(violatedSet),
+    reasons,
+  };
+}
+
+/**
+ * Safely repairs a Character payload to conform to firestore.rules constraints
+ * (truncates overlong strings/lists, strips disallowed keys, clamps numeric bounds).
+ * Does NOT fabricate missing critical identity fields (empty `hanzi` or empty `id`).
+ */
+export function repairCharacterForCloud(
+  rawChar: Character,
+  userId: string
+): Record<string, any> {
+  const now = Date.now();
+  const src: Record<string, any> = isPlainObject(rawChar) ? rawChar : {};
+
+  const repairedId =
+    typeof src.id === 'string'
+      ? truncateStringSafe(src.id.trim().replace(/[/\s]+/g, '_'), 128)
+      : '';
+
+  const repairedHanzi =
+    typeof src.hanzi === 'string' ? truncateStringSafe(src.hanzi.trim(), 100) : '';
+
+  const fallbackStroke = Math.min(
+    200,
+    Math.max(1, repairedHanzi ? Array.from(repairedHanzi).length * 4 : 1)
+  );
+
+  const rawSrs = isPlainObject(src.srs) ? src.srs : {};
+  const repairedSrs: Record<string, any> = {
+    easinessFactor: isFiniteNum(rawSrs.easinessFactor)
+      ? clampNum(rawSrs.easinessFactor, 1.0, 10.0)
+      : DEFAULT_SRS.easinessFactor,
+    interval: isFiniteNum(rawSrs.interval)
+      ? clampNum(rawSrs.interval, 0, 100000)
+      : DEFAULT_SRS.interval,
+    repetitions: isFiniteNum(rawSrs.repetitions)
+      ? clampNum(rawSrs.repetitions, 0, 100000)
+      : DEFAULT_SRS.repetitions,
+    nextReviewDate:
+      isFiniteNum(rawSrs.nextReviewDate) && rawSrs.nextReviewDate >= 0
+        ? rawSrs.nextReviewDate
+        : now,
+    totalCorrect: isFiniteNum(rawSrs.totalCorrect)
+      ? clampNum(rawSrs.totalCorrect, 0, 1000000)
+      : 0,
+    totalIncorrect: isFiniteNum(rawSrs.totalIncorrect)
+      ? clampNum(rawSrs.totalIncorrect, 0, 1000000)
+      : 0,
+    consecutiveCorrect: isFiniteNum(rawSrs.consecutiveCorrect)
+      ? clampNum(rawSrs.consecutiveCorrect, 0, 100000)
+      : 0,
+    lastReviewedAt:
+      rawSrs.lastReviewedAt === null || rawSrs.lastReviewedAt === undefined
+        ? null
+        : isFiniteNum(rawSrs.lastReviewedAt)
+        ? clampNum(rawSrs.lastReviewedAt, 0, 9999999999999)
+        : null,
+    masteryLevel: isFiniteNum(rawSrs.masteryLevel)
+      ? clampNum(rawSrs.masteryLevel, 0, 100)
+      : 0,
+    difficultyScore: isFiniteNum(rawSrs.difficultyScore)
+      ? clampNum(rawSrs.difficultyScore, 0, 100)
+      : 0,
+  };
+
+  const repaired: Record<string, any> = {
+    id: repairedId,
+    userId,
+    hanzi: repairedHanzi,
+    pinyin: typeof src.pinyin === 'string' ? truncateStringSafe(src.pinyin, 200) : '',
+    hanViet: typeof src.hanViet === 'string' ? truncateStringSafe(src.hanViet, 200) : '',
+    meaning: typeof src.meaning === 'string' ? truncateStringSafe(src.meaning, 1000) : '',
+    radical: typeof src.radical === 'string' ? truncateStringSafe(src.radical, 100) : '',
+    strokeCount: isFiniteNum(src.strokeCount) ? clampNum(src.strokeCount, 0, 200) : fallbackStroke,
+    listIds: Array.isArray(src.listIds)
+      ? src.listIds.filter((item: unknown): item is string => typeof item === 'string').slice(0, 50)
+      : [],
+    createdAt: isFiniteNum(src.createdAt) && src.createdAt >= 0 ? src.createdAt : now,
+    updatedAt: isFiniteNum(src.updatedAt) && src.updatedAt > 0 ? src.updatedAt : now,
+    srs: repairedSrs,
+  };
+
+  if ('components' in src) {
+    repaired.components =
+      typeof src.components === 'string' ? truncateStringSafe(src.components, 500) : null;
+  }
+  if ('mnemonic' in src) {
+    repaired.mnemonic =
+      typeof src.mnemonic === 'string' ? truncateStringSafe(src.mnemonic, 2000) : null;
+  }
+  if ('customNotes' in src) {
+    repaired.customNotes =
+      typeof src.customNotes === 'string' ? truncateStringSafe(src.customNotes, 2000) : null;
+  }
+  if ('hskLevel' in src) {
+    repaired.hskLevel = isFiniteNum(src.hskLevel) ? clampNum(src.hskLevel, 0, 9) : null;
+  }
+  if ('aiMnemonics' in src) {
+    repaired.aiMnemonics = Array.isArray(src.aiMnemonics)
+      ? src.aiMnemonics.filter((m: unknown) => isPlainObject(m)).slice(0, 10)
+      : null;
+  }
+  if ('examples' in src) {
+    repaired.examples = Array.isArray(src.examples)
+      ? src.examples.filter((ex: unknown) => isPlainObject(ex)).slice(0, 20)
+      : null;
+  }
+  if ('compoundWords' in src) {
+    repaired.compoundWords = Array.isArray(src.compoundWords)
+      ? src.compoundWords.filter((cw: unknown) => isPlainObject(cw)).slice(0, 30)
+      : null;
+  }
+
+  return sanitizeForFirestore(repaired);
+}
+
+function prepareCharacterPayloadForCloud(
+  character: Character,
+  userId: string
+): Record<string, any> | null {
+  const rawPayload = sanitizeForFirestore({ ...character, userId, updatedAt: Date.now() });
+  const initialValidation = validateCharacterForCloud(rawPayload, userId, rawPayload?.id);
+
+  if (initialValidation.isValid) {
+    return rawPayload;
+  }
+
+  console.warn(
+    `[CloudSync] Character violated firestore.rules before write (id=${String(character?.id)}, hanzi=${String(character?.hanzi)}). Violated fields: [${initialValidation.violatedFields.join(', ')}]. Details: ${initialValidation.reasons.join('; ')}. Attempting safe repair...`
+  );
+
+  const repairedPayload = repairCharacterForCloud(character, userId);
+  const afterRepairValidation = validateCharacterForCloud(
+    repairedPayload,
+    userId,
+    repairedPayload?.id
+  );
+
+  if (!afterRepairValidation.isValid) {
+    console.error(
+      `[CloudSync] Skipping invalid character after repair failed (id=${String(character?.id)}, hanzi=${String(character?.hanzi)}). Violated fields: [${afterRepairValidation.violatedFields.join(', ')}]. Details: ${afterRepairValidation.reasons.join('; ')}`
+    );
+    return null;
+  }
+
+  return repairedPayload;
+}
+
 /**
  * Saves or updates a single character in Cloud Firestore
  */
 export async function saveCharacterToCloud(userId: string, character: Character): Promise<void> {
-  const path = `users/${userId}/characters/${character.id}`;
+  const cleanData = prepareCharacterPayloadForCloud(character, userId);
+  if (!cleanData) return;
+  const path = `users/${userId}/characters/${cleanData.id}`;
   try {
-    const docRef = doc(db, 'users', userId, 'characters', character.id);
-    const cleanData = sanitizeForFirestore({ ...character, userId, updatedAt: Date.now() });
+    const docRef = doc(db, 'users', userId, 'characters', cleanData.id);
     await setDoc(docRef, cleanData, { merge: true });
   } catch (err) {
     handleFirestoreError(err, OperationType.WRITE, path);
@@ -256,25 +710,76 @@ export async function deleteCharactersBatchFromCloud(
 }
 
 /**
- * Saves a batch of characters to Cloud Firestore (max 400 per batch)
+ * Saves a batch of characters to Cloud Firestore (max 400 per batch).
+ * Validates and safely repairs each document before writing, and falls back to
+ * per-document writes if a batch is rejected so valid records still reach Cloud.
  */
 export async function saveCharactersBatchToCloud(userId: string, characters: Character[]): Promise<void> {
   if (characters.length === 0) return;
+
+  const preparedDocs: Array<{ docId: string; hanzi: string; payload: Record<string, any> }> = [];
+  for (const c of characters) {
+    const payload = prepareCharacterPayloadForCloud(c, userId);
+    if (payload) {
+      preparedDocs.push({
+        docId: payload.id,
+        hanzi: payload.hanzi,
+        payload,
+      });
+    }
+  }
+
+  if (preparedDocs.length === 0) return;
+
   const path = `users/${userId}/characters`;
   const chunkSize = 400;
-  try {
-    for (let i = 0; i < characters.length; i += chunkSize) {
-      const chunk = characters.slice(i, i + chunkSize);
+  let totalSucceeded = 0;
+  let lastError: unknown = null;
+  const failedDocs: Array<{ id: string; hanzi: string; code: string; reason: string }> = [];
+
+  for (let i = 0; i < preparedDocs.length; i += chunkSize) {
+    const chunk = preparedDocs.slice(i, i + chunkSize);
+    try {
       const batch = writeBatch(db);
-      chunk.forEach((c) => {
-        const docRef = doc(db, 'users', userId, 'characters', c.id);
-        const cleanChar = sanitizeForFirestore({ ...c, userId, updatedAt: Date.now() });
-        batch.set(docRef, cleanChar, { merge: true });
+      chunk.forEach((item) => {
+        const docRef = doc(db, 'users', userId, 'characters', item.docId);
+        batch.set(docRef, item.payload, { merge: true });
       });
       await batch.commit();
+      totalSucceeded += chunk.length;
+    } catch (batchErr: any) {
+      lastError = batchErr;
+      console.warn(
+        `[CloudSync] Batch commit failed (${batchErr?.code || 'unknown'}: ${batchErr?.message || batchErr}). Falling back to per-document writes for ${chunk.length} characters...`
+      );
+
+      for (const item of chunk) {
+        try {
+          const docRef = doc(db, 'users', userId, 'characters', item.docId);
+          await setDoc(docRef, item.payload, { merge: true });
+          totalSucceeded += 1;
+        } catch (docErr: any) {
+          lastError = docErr;
+          failedDocs.push({
+            id: item.docId,
+            hanzi: item.hanzi,
+            code: String(docErr?.code || ''),
+            reason: docErr instanceof Error ? docErr.message : String(docErr),
+          });
+        }
+      }
     }
-  } catch (err) {
-    handleFirestoreError(err, OperationType.WRITE, path);
+  }
+
+  if (failedDocs.length > 0) {
+    console.error(
+      `[CloudSync] ${failedDocs.length} character document(s) failed during per-document fallback under ${path}:`,
+      JSON.stringify(failedDocs)
+    );
+  }
+
+  if (totalSucceeded === 0 && lastError) {
+    handleFirestoreError(lastError, OperationType.WRITE, path);
   }
 }
 

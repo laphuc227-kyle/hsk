@@ -169,8 +169,9 @@ export function detectCompoundWordsFromCharacters(
 
     // We keep compound words if at least 1 constituent character exists in user vocabulary OR it is explicitly in list
     if (matchedCount > 0 || isInUserList) {
+      const safeIdSuffix = word.replace(/[/\s]+/g, '_').slice(0, 118);
       detectedMap.set(word, {
-        id: `detected_${word}`,
+        id: `detected_${safeIdSuffix}`,
         word,
         pinyin,
         meaning,
@@ -273,10 +274,10 @@ export function convertCompoundToCharacter(detected: DetectedCompoundWord, listI
     hanViet: detected.hanViet || '',
     meaning: detected.meaning,
     radical: detected.isFullMatch ? 'Từ ghép ôn tập' : 'Từ ghép mở rộng',
-    strokeCount: detected.word.length * 5,
-    components: componentString,
-    mnemonic: customNotes,
-    customNotes,
+    strokeCount: Math.min(200, detected.word.length * 5),
+    components: componentString.slice(0, 500),
+    mnemonic: customNotes.slice(0, 2000),
+    customNotes: customNotes.slice(0, 2000),
     examples: detected.exampleSentence ? [detected.exampleSentence] : [],
     listIds,
     createdAt: Date.now(),

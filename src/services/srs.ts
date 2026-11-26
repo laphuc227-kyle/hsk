@@ -24,14 +24,14 @@ export function calculateSRSUpdate(
     } else if (repetitions === 1) {
       interval = 6;
     } else {
-      interval = Math.round(interval * easinessFactor);
+      interval = Math.min(100000, Math.round(interval * easinessFactor));
     }
 
     repetitions += 1;
     // SM-2 EF adjustment
     const q = rating; // 2 or 3
     easinessFactor = easinessFactor + (0.1 - (3 - q) * (0.08 + (3 - q) * 0.02));
-    easinessFactor = Math.max(1.3, easinessFactor);
+    easinessFactor = Math.min(10, Math.max(1.3, easinessFactor));
 
     consecutiveCorrect += 1;
     totalCorrect += 1;
