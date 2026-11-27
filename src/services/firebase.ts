@@ -9,12 +9,14 @@ import {
 } from 'firebase/auth';
 import {
   getFirestore,
+  initializeFirestore,
   doc,
   collection,
   getDoc,
   getDocFromServer,
   getDocs,
   setDoc,
+  deleteDoc,
   writeBatch,
   query,
   where,
@@ -39,13 +41,84 @@ import { lookupBuiltIn } from './builtInDictionary';
 // Initialize Firebase App singleton
 export const app = !getApps().length ? initializeApp(firebaseConfig) : getApp();
 // CRITICAL: Must pass firestoreDatabaseId if provided in config
-export const db = getFirestore(app, firebaseConfig.firestoreDatabaseId);
+export const db = (() => {
+  try {
+    const settings =
+      typeof window !== 'undefined'
+        ? { experimentalAutoDetectLongPolling: true, ignoreUndefinedProperties: true }
+        : { ignoreUndefinedProperties: true };
+    return initializeFirestore(app, settings, firebaseConfig.firestoreDatabaseId);
+  } catch {
+    return getFirestore(app, firebaseConfig.firestoreDatabaseId);
+  }
+})();
 export const auth = getAuth(app);
 const googleProvider = new GoogleAuthProvider();
 
+const FIRESTORE_READ_TIMEOUT_MS = 20000;
+const FIRESTORE_WRITE_TIMEOUT_MS = 18000;
+const FIRESTORE_FALLBACK_CONCURRENCY = 12;
+
+export function withTimeout<T>(promise: Promise<T>, timeoutMs: number, label: string): Promise<T> {
+  return new Promise<T>((resolve, reject) => {
+    const timer = setTimeout(() => {
+      const err: any = new Error(`Thao tác đồng bộ "${label}" quá thời gian chờ (${Math.round(timeoutMs / 1000)}s).`);
+      err.code = 'deadline-exceeded';
+      reject(err);
+    }, timeoutMs);
+
+    promise.then(
+      (val) => {
+        clearTimeout(timer);
+        resolve(val);
+      },
+      (err) => {
+        clearTimeout(timer);
+        reject(err);
+      }
+    );
+  });
+}
+
+function isTransientFirestoreError(error: unknown): boolean {
+  if (typeof navigator !== 'undefined' && navigator.onLine === false) return true;
+  const code = String((error as any)?.code || '').toLowerCase();
+  return (
+    code === 'unavailable' ||
+    code === 'deadline-exceeded' ||
+    code === 'aborted' ||
+    code === 'resource-exhausted' ||
+    code === 'internal' ||
+    code === 'unknown' ||
+    code.includes('network')
+  );
+}
+
+async function runWithConcurrency<T>(
+  items: T[],
+  concurrency: number,
+  worker: (item: T) => Promise<void>
+): Promise<void> {
+  if (items.length === 0) return;
+  let index = 0;
+  const workerCount = Math.min(concurrency, items.length);
+  await Promise.all(
+    Array.from({ length: workerCount }, async () => {
+      while (index < items.length) {
+        const current = items[index++];
+        await worker(current);
+      }
+    })
+  );
+}
+
 export async function testFirestoreConnection(): Promise<void> {
   try {
-    await getDocFromServer(doc(db, 'test', 'connection'));
+    await withTimeout(
+      getDocFromServer(doc(db, 'test', 'connection')),
+      10000,
+      'testConnection'
+    );
   } catch (error) {
     if (error instanceof Error && error.message.includes('the client is offline')) {
       console.error('Please check your Firebase configuration (client offline).');
@@ -139,7 +212,7 @@ export async function loadCharactersFromCloud(userId: string): Promise<Character
   const path = `users/${userId}/characters`;
   try {
     const colRef = collection(db, 'users', userId, 'characters');
-    const snapshot = await getDocs(colRef);
+    const snapshot = await withTimeout(getDocs(colRef), FIRESTORE_READ_TIMEOUT_MS, 'loadCharacters');
     const chars: Character[] = [];
     snapshot.forEach((docSnap) => {
       chars.push(docSnap.data() as Character);
@@ -613,7 +686,7 @@ export async function saveCharacterToCloud(userId: string, character: Character)
   const path = `users/${userId}/characters/${cleanData.id}`;
   try {
     const docRef = doc(db, 'users', userId, 'characters', cleanData.id);
-    await setDoc(docRef, cleanData, { merge: true });
+    await withTimeout(setDoc(docRef, cleanData, { merge: true }), FIRESTORE_WRITE_TIMEOUT_MS, 'saveCharacter');
   } catch (err) {
     handleFirestoreError(err, OperationType.WRITE, path);
   }
@@ -639,7 +712,7 @@ export async function deleteCharacterFromCloud(
         collection(db, 'users', userId, 'characters'),
         where('hanzi', '==', cleanHanzi)
       );
-      const snap = await getDocs(q);
+      const snap = await withTimeout(getDocs(q), FIRESTORE_READ_TIMEOUT_MS, 'findDuplicateChar');
       snap.forEach((docSnap) => {
         refsToDelete.set(docSnap.id, docSnap.ref);
       });
@@ -652,7 +725,7 @@ export async function deleteCharacterFromCloud(
     for (let i = 0; i < refs.length; i += chunkSize) {
       const batch = writeBatch(db);
       refs.slice(i, i + chunkSize).forEach((ref) => batch.delete(ref));
-      await batch.commit();
+      await withTimeout(batch.commit(), FIRESTORE_WRITE_TIMEOUT_MS, 'deleteCharacterBatch');
     }
   } catch (err) {
     handleFirestoreError(err, OperationType.DELETE, path);
@@ -685,7 +758,11 @@ export async function deleteCharactersBatchFromCloud(
     });
 
     if (targetHanzi.size > 0) {
-      const snapshot = await getDocs(collection(db, 'users', userId, 'characters'));
+      const snapshot = await withTimeout(
+        getDocs(collection(db, 'users', userId, 'characters')),
+        FIRESTORE_READ_TIMEOUT_MS,
+        'listCharsForBatchDelete'
+      );
       snapshot.forEach((docSnap) => {
         const data = docSnap.data() as Partial<Character>;
         if (
@@ -702,7 +779,7 @@ export async function deleteCharactersBatchFromCloud(
     for (let i = 0; i < refs.length; i += chunkSize) {
       const batch = writeBatch(db);
       refs.slice(i, i + chunkSize).forEach((ref) => batch.delete(ref));
-      await batch.commit();
+      await withTimeout(batch.commit(), FIRESTORE_WRITE_TIMEOUT_MS, 'deleteCharsBatch');
     }
   } catch (err) {
     handleFirestoreError(err, OperationType.DELETE, path);
@@ -766,21 +843,37 @@ export async function saveCharactersBatchToCloud(
         const docRef = doc(db, 'users', userId, 'characters', item.docId);
         batch.set(docRef, item.payload, { merge: true });
       });
-      await batch.commit();
+      await withTimeout(batch.commit(), FIRESTORE_WRITE_TIMEOUT_MS, 'saveCharactersBatch');
       chunk.forEach((item) => {
         result.succeededIds.push(item.docId);
         result.succeededHanzi.push(item.hanzi);
       });
     } catch (batchErr: any) {
       lastError = batchErr;
+      if (isTransientFirestoreError(batchErr)) {
+        console.warn(
+          `[CloudSync] Batch commit skipped per-doc fallback due to transient/network error (${batchErr?.code || 'unknown'}):`,
+          batchErr?.message || batchErr
+        );
+        chunk.forEach((item) => {
+          result.failedDocs.push({
+            id: item.docId,
+            hanzi: item.hanzi,
+            code: String(batchErr?.code || 'unavailable'),
+            reason: batchErr instanceof Error ? batchErr.message : String(batchErr),
+          });
+        });
+        break;
+      }
+
       console.warn(
-        `[CloudSync] Batch commit failed (${batchErr?.code || 'unknown'}: ${batchErr?.message || batchErr}). Falling back to per-document writes for ${chunk.length} characters...`
+        `[CloudSync] Batch commit failed (${batchErr?.code || 'unknown'}: ${batchErr?.message || batchErr}). Falling back to concurrent per-document writes for ${chunk.length} characters...`
       );
 
-      for (const item of chunk) {
+      await runWithConcurrency(chunk, FIRESTORE_FALLBACK_CONCURRENCY, async (item) => {
         try {
           const docRef = doc(db, 'users', userId, 'characters', item.docId);
-          await setDoc(docRef, item.payload, { merge: true });
+          await withTimeout(setDoc(docRef, item.payload, { merge: true }), FIRESTORE_WRITE_TIMEOUT_MS, `saveChar:${item.hanzi}`);
           result.succeededIds.push(item.docId);
           result.succeededHanzi.push(item.hanzi);
         } catch (docErr: any) {
@@ -792,13 +885,13 @@ export async function saveCharactersBatchToCloud(
             reason: docErr instanceof Error ? docErr.message : String(docErr),
           });
         }
-      }
+      });
     }
   }
 
   if (result.failedDocs.length > 0) {
     console.error(
-      `[CloudSync] ${result.failedDocs.length} character document(s) failed during per-document fallback under ${path}:`,
+      `[CloudSync] ${result.failedDocs.length} character document(s) failed during write under ${path}:`,
       JSON.stringify(result.failedDocs)
     );
   }
@@ -817,7 +910,7 @@ export async function loadWordListsFromCloud(userId: string): Promise<WordList[]
   const path = `users/${userId}/wordLists`;
   try {
     const colRef = collection(db, 'users', userId, 'wordLists');
-    const snapshot = await getDocs(colRef);
+    const snapshot = await withTimeout(getDocs(colRef), FIRESTORE_READ_TIMEOUT_MS, 'loadWordLists');
     const lists: WordList[] = [];
     snapshot.forEach((docSnap) => {
       lists.push(docSnap.data() as WordList);
@@ -883,21 +976,25 @@ export async function saveWordListsToCloud(userId: string, wordLists: WordList[]
       const docRef = doc(db, 'users', userId, 'wordLists', item.id);
       batch.set(docRef, item.payload, { merge: true });
     });
-    await batch.commit();
+    await withTimeout(batch.commit(), FIRESTORE_WRITE_TIMEOUT_MS, 'saveWordListsBatch');
   } catch (batchErr) {
-    console.warn('[CloudSync] WordLists batch failed, falling back to per-doc:', batchErr);
+    if (isTransientFirestoreError(batchErr)) {
+      handleFirestoreError(batchErr, OperationType.WRITE, path);
+      return;
+    }
+    console.warn('[CloudSync] WordLists batch failed, falling back to concurrent per-doc:', batchErr);
     let succeeded = 0;
     let lastError: unknown = batchErr;
-    for (const item of prepared) {
+    await runWithConcurrency(prepared, FIRESTORE_FALLBACK_CONCURRENCY, async (item) => {
       try {
         const docRef = doc(db, 'users', userId, 'wordLists', item.id);
-        await setDoc(docRef, item.payload, { merge: true });
+        await withTimeout(setDoc(docRef, item.payload, { merge: true }), FIRESTORE_WRITE_TIMEOUT_MS, `saveWordList:${item.id}`);
         succeeded++;
       } catch (docErr) {
         lastError = docErr;
         console.warn(`[CloudSync] Failed saving wordList ${item.id}:`, docErr);
       }
-    }
+    });
     if (succeeded === 0 && lastError) {
       handleFirestoreError(lastError, OperationType.WRITE, path);
     }
@@ -911,7 +1008,7 @@ export async function loadUserStatsFromCloud(userId: string): Promise<UserStats 
   const path = `users/${userId}/stats/main`;
   try {
     const docRef = doc(db, 'users', userId, 'stats', 'main');
-    const snap = await getDoc(docRef);
+    const snap = await withTimeout(getDoc(docRef), FIRESTORE_READ_TIMEOUT_MS, 'loadUserStats');
     if (snap.exists()) {
       return snap.data() as UserStats;
     }
@@ -947,7 +1044,7 @@ export async function saveUserStatsToCloud(userId: string, stats: UserStats): Pr
 
   try {
     const docRef = doc(db, 'users', userId, 'stats', 'main');
-    await setDoc(docRef, cleanStats, { merge: true });
+    await withTimeout(setDoc(docRef, cleanStats, { merge: true }), FIRESTORE_WRITE_TIMEOUT_MS, 'saveUserStats');
   } catch (err) {
     handleFirestoreError(err, OperationType.WRITE, path);
   }
@@ -1129,7 +1226,7 @@ export async function loadSavedSessionsFromCloud(
   const path = `users/${userId}/savedSessions`;
   try {
     const colRef = collection(db, 'users', userId, 'savedSessions');
-    const snapshot = await getDocs(colRef);
+    const snapshot = await withTimeout(getDocs(colRef), FIRESTORE_READ_TIMEOUT_MS, 'loadSavedSessions');
     const charById = new Map<string, Character>();
     const charByHanzi = new Map<string, Character>();
     allCharacters.forEach((c) => {
@@ -1189,7 +1286,7 @@ export async function saveSavedSessionToCloud(
   const path = `users/${userId}/savedSessions/${session.id}`;
   try {
     const docRef = doc(db, 'users', userId, 'savedSessions', session.id);
-    await setDoc(docRef, payload, { merge: false });
+    await withTimeout(setDoc(docRef, payload, { merge: false }), FIRESTORE_WRITE_TIMEOUT_MS, `saveSession:${session.id}`);
   } catch (err) {
     handleFirestoreError(err, OperationType.WRITE, path);
   }
@@ -1202,9 +1299,7 @@ export async function deleteSavedSessionFromCloud(
   const path = `users/${userId}/savedSessions/${sessionId}`;
   try {
     const docRef = doc(db, 'users', userId, 'savedSessions', sessionId);
-    const batch = writeBatch(db);
-    batch.delete(docRef);
-    await batch.commit();
+    await withTimeout(deleteDoc(docRef), FIRESTORE_WRITE_TIMEOUT_MS, `deleteSession:${sessionId}`);
   } catch (err) {
     handleFirestoreError(err, OperationType.DELETE, path);
   }
@@ -1279,21 +1374,25 @@ export async function saveSavedSessionsBatchToCloud(
       const docRef = doc(db, 'users', userId, 'savedSessions', item.id);
       batch.set(docRef, item.payload, { merge: false });
     });
-    await batch.commit();
+    await withTimeout(batch.commit(), FIRESTORE_WRITE_TIMEOUT_MS, 'saveSavedSessionsBatch');
   } catch (batchErr) {
-    console.warn('[CloudSync] SavedSessions batch failed, falling back to per-doc:', batchErr);
+    if (isTransientFirestoreError(batchErr)) {
+      handleFirestoreError(batchErr, OperationType.WRITE, path);
+      return;
+    }
+    console.warn('[CloudSync] SavedSessions batch failed, falling back to concurrent per-doc:', batchErr);
     let succeeded = 0;
     let lastError: unknown = batchErr;
-    for (const item of prepared) {
+    await runWithConcurrency(prepared, FIRESTORE_FALLBACK_CONCURRENCY, async (item) => {
       try {
         const docRef = doc(db, 'users', userId, 'savedSessions', item.id);
-        await setDoc(docRef, item.payload, { merge: false });
+        await withTimeout(setDoc(docRef, item.payload, { merge: false }), FIRESTORE_WRITE_TIMEOUT_MS, `saveSession:${item.id}`);
         succeeded++;
       } catch (docErr) {
         lastError = docErr;
         console.warn(`[CloudSync] Failed saving session ${item.id}:`, docErr);
       }
-    }
+    });
     if (succeeded === 0 && lastError) {
       handleFirestoreError(lastError, OperationType.WRITE, path);
     }

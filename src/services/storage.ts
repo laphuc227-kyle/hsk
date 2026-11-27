@@ -11,6 +11,8 @@ const KEYS = {
   OWNER_UID: 'hanzi_tutor_owner_uid_v1',
   PENDING_CLOUD_DELETES: 'hanzi_tutor_pending_cloud_deletes_v1',
   PENDING_CLOUD_UPSERTS: 'hanzi_tutor_pending_cloud_upserts_v1',
+  PENDING_CLOUD_SESSION_DELETES: 'hanzi_tutor_pending_cloud_session_deletes_v1',
+  PENDING_CLOUD_SESSION_UPSERTS: 'hanzi_tutor_pending_cloud_session_upserts_v1',
   CLOUD_SYNC_SNAPSHOT: 'hanzi_tutor_cloud_sync_snapshot_v1',
   DISMISSED_COMPOUNDS: 'hanzi_tutor_dismissed_compounds_v1',
 };
@@ -24,6 +26,16 @@ export interface PendingCloudDeleteItem {
 export interface PendingCloudUpsertItem {
   id: string;
   hanzi: string;
+  updatedAt: number;
+}
+
+export interface PendingCloudSessionDeleteItem {
+  id: string;
+  deletedAt: number;
+}
+
+export interface PendingCloudSessionUpsertItem {
+  id: string;
   updatedAt: number;
 }
 
@@ -317,6 +329,170 @@ export function clearCloudSyncSnapshot(uid?: string): void {
   if (uid in map) {
     delete map[uid];
     writeCloudSyncSnapshotMap(map);
+  }
+}
+
+export function addSessionIdsToCloudSyncSnapshot(uid: string, sessionIds: string[]): void {
+  if (!uid || sessionIds.length === 0) return;
+  const map = readCloudSyncSnapshotMap();
+  const prev = map[uid];
+  map[uid] = {
+    hasSyncedOnce: prev?.hasSyncedOnce ?? true,
+    charHanzi: prev?.charHanzi || [],
+    listIds: prev?.listIds || [],
+    sessionIds: Array.from(new Set([...(prev?.sessionIds || []), ...sessionIds.filter(Boolean)])),
+    syncedAt: Date.now(),
+  };
+  writeCloudSyncSnapshotMap(map);
+}
+
+export function removeSessionIdFromCloudSyncSnapshot(uid: string, sessionId: string): void {
+  if (!uid || !sessionId) return;
+  const map = readCloudSyncSnapshotMap();
+  const snap = map[uid];
+  if (!snap) return;
+  snap.sessionIds = (snap.sessionIds || []).filter((id) => id !== sessionId);
+  map[uid] = snap;
+  writeCloudSyncSnapshotMap(map);
+}
+
+function readPendingSessionDeletesMap(): Record<string, PendingCloudSessionDeleteItem[]> {
+  try {
+    const raw = localStorage.getItem(KEYS.PENDING_CLOUD_SESSION_DELETES);
+    if (!raw) return {};
+    const parsed = JSON.parse(raw);
+    return parsed && typeof parsed === 'object' && !Array.isArray(parsed) ? parsed : {};
+  } catch {
+    return {};
+  }
+}
+
+function writePendingSessionDeletesMap(map: Record<string, PendingCloudSessionDeleteItem[]>): void {
+  try {
+    localStorage.setItem(KEYS.PENDING_CLOUD_SESSION_DELETES, JSON.stringify(map));
+  } catch (e) {
+    console.warn('Error persisting pending cloud session deletes:', e);
+  }
+}
+
+export function getPendingCloudSessionDeletes(uid: string): PendingCloudSessionDeleteItem[] {
+  if (!uid) return [];
+  const map = readPendingSessionDeletesMap();
+  const list = map[uid];
+  return Array.isArray(list) ? list : [];
+}
+
+export function addPendingCloudSessionDelete(uid: string, sessionId: string): PendingCloudSessionDeleteItem[] {
+  if (!uid || !sessionId) return [];
+  const map = readPendingSessionDeletesMap();
+  const existing = Array.isArray(map[uid]) ? map[uid] : [];
+  const next: PendingCloudSessionDeleteItem[] = [
+    ...existing.filter((entry) => entry.id !== sessionId),
+    { id: sessionId, deletedAt: Date.now() },
+  ];
+  map[uid] = next;
+  writePendingSessionDeletesMap(map);
+  return next;
+}
+
+export function removePendingCloudSessionDeletes(uid: string, sessionIds: string[]): void {
+  if (!uid || sessionIds.length === 0) return;
+  const map = readPendingSessionDeletesMap();
+  const existing = Array.isArray(map[uid]) ? map[uid] : [];
+  if (existing.length === 0) return;
+  const idSet = new Set(sessionIds.filter(Boolean));
+  const next = existing.filter((entry) => !idSet.has(entry.id));
+  if (next.length === 0) {
+    delete map[uid];
+  } else {
+    map[uid] = next;
+  }
+  writePendingSessionDeletesMap(map);
+}
+
+export function clearPendingCloudSessionDeletes(uid?: string): void {
+  if (!uid) {
+    try {
+      localStorage.removeItem(KEYS.PENDING_CLOUD_SESSION_DELETES);
+    } catch {}
+    return;
+  }
+  const map = readPendingSessionDeletesMap();
+  if (uid in map) {
+    delete map[uid];
+    writePendingSessionDeletesMap(map);
+  }
+}
+
+function readPendingSessionUpsertsMap(): Record<string, PendingCloudSessionUpsertItem[]> {
+  try {
+    const raw = localStorage.getItem(KEYS.PENDING_CLOUD_SESSION_UPSERTS);
+    if (!raw) return {};
+    const parsed = JSON.parse(raw);
+    return parsed && typeof parsed === 'object' && !Array.isArray(parsed) ? parsed : {};
+  } catch {
+    return {};
+  }
+}
+
+function writePendingSessionUpsertsMap(map: Record<string, PendingCloudSessionUpsertItem[]>): void {
+  try {
+    localStorage.setItem(KEYS.PENDING_CLOUD_SESSION_UPSERTS, JSON.stringify(map));
+  } catch (e) {
+    console.warn('Error persisting pending cloud session upserts:', e);
+  }
+}
+
+export function getPendingCloudSessionUpserts(uid: string): PendingCloudSessionUpsertItem[] {
+  if (!uid) return [];
+  const map = readPendingSessionUpsertsMap();
+  const list = map[uid];
+  return Array.isArray(list) ? list : [];
+}
+
+export function addPendingCloudSessionUpsert(
+  uid: string,
+  sessionId: string,
+  updatedAt: number = Date.now()
+): PendingCloudSessionUpsertItem[] {
+  if (!uid || !sessionId) return [];
+  const map = readPendingSessionUpsertsMap();
+  const existing = Array.isArray(map[uid]) ? map[uid] : [];
+  const next: PendingCloudSessionUpsertItem[] = [
+    ...existing.filter((entry) => entry.id !== sessionId),
+    { id: sessionId, updatedAt },
+  ];
+  map[uid] = next;
+  writePendingSessionUpsertsMap(map);
+  return next;
+}
+
+export function removePendingCloudSessionUpserts(uid: string, sessionIds: string[]): void {
+  if (!uid || sessionIds.length === 0) return;
+  const map = readPendingSessionUpsertsMap();
+  const existing = Array.isArray(map[uid]) ? map[uid] : [];
+  if (existing.length === 0) return;
+  const idSet = new Set(sessionIds.filter(Boolean));
+  const next = existing.filter((entry) => !idSet.has(entry.id));
+  if (next.length === 0) {
+    delete map[uid];
+  } else {
+    map[uid] = next;
+  }
+  writePendingSessionUpsertsMap(map);
+}
+
+export function clearPendingCloudSessionUpserts(uid?: string): void {
+  if (!uid) {
+    try {
+      localStorage.removeItem(KEYS.PENDING_CLOUD_SESSION_UPSERTS);
+    } catch {}
+    return;
+  }
+  const map = readPendingSessionUpsertsMap();
+  if (uid in map) {
+    delete map[uid];
+    writePendingSessionUpsertsMap(map);
   }
 }
 
@@ -673,6 +849,8 @@ export function resetAllData(): void {
   localStorage.removeItem(KEYS.OWNER_UID);
   localStorage.removeItem(KEYS.PENDING_CLOUD_DELETES);
   localStorage.removeItem(KEYS.PENDING_CLOUD_UPSERTS);
+  localStorage.removeItem(KEYS.PENDING_CLOUD_SESSION_DELETES);
+  localStorage.removeItem(KEYS.PENDING_CLOUD_SESSION_UPSERTS);
   localStorage.removeItem(KEYS.CLOUD_SYNC_SNAPSHOT);
   localStorage.removeItem(KEYS.DISMISSED_COMPOUNDS);
   initializeStorage();
@@ -726,12 +904,23 @@ export function upsertSavedStudySession(session: SavedStudySession): SavedStudyS
     .sort((a, b) => (b.updatedAt || 0) - (a.updatedAt || 0))
     .slice(0, MAX_SAVED_SESSIONS);
   persistSavedStudySessions(next);
+  const ownerUid = getStorageOwnerUid();
+  if (ownerUid && session.id) {
+    removePendingCloudSessionDeletes(ownerUid, [session.id]);
+    addPendingCloudSessionUpsert(ownerUid, session.id, session.updatedAt || Date.now());
+  }
   return next;
 }
 
 export function removeSavedStudySession(sessionId: string): SavedStudySession[] {
   const next = getSavedStudySessions().filter((s) => s.id !== sessionId);
   persistSavedStudySessions(next);
+  const ownerUid = getStorageOwnerUid();
+  if (ownerUid && sessionId) {
+    removePendingCloudSessionUpserts(ownerUid, [sessionId]);
+    addPendingCloudSessionDelete(ownerUid, sessionId);
+    removeSessionIdFromCloudSyncSnapshot(ownerUid, sessionId);
+  }
   return next;
 }
 

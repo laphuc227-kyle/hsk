@@ -243,10 +243,12 @@ export const StudySession: React.FC<StudySessionProps> = ({
     setIncorrectCount(0);
     setCurrentIndex(0);
     setIsCompleted(false);
+    deletedSessionOnFinishRef.current = null;
   }, [mode, allCharacters, selectedListId, selectedQuestionLimit, availablePoolCount]);
 
   // Ref & helpers for reliable auto-saving unfinished study sessions
   const activeSessionId = `${mode}__${selectedListId || 'all'}`;
+  const deletedSessionOnFinishRef = useRef<string | null>(null);
   const latestProgressRef = useRef({
     activeSessionId,
     mode,
@@ -282,7 +284,10 @@ export const StudySession: React.FC<StudySessionProps> = ({
 
     if (snap.isCompleted) {
       removeSavedStudySession(snap.activeSessionId);
-      onSavedSessionDeleted?.(snap.activeSessionId);
+      if (deletedSessionOnFinishRef.current !== snap.activeSessionId) {
+        deletedSessionOnFinishRef.current = snap.activeSessionId;
+        onSavedSessionDeleted?.(snap.activeSessionId);
+      }
       if (notifyParent && onSavedSessionsChange) onSavedSessionsChange();
       return;
     }
@@ -301,11 +306,15 @@ export const StudySession: React.FC<StudySessionProps> = ({
 
     if (resumeIndex >= snap.questions.length) {
       removeSavedStudySession(snap.activeSessionId);
-      onSavedSessionDeleted?.(snap.activeSessionId);
+      if (deletedSessionOnFinishRef.current !== snap.activeSessionId) {
+        deletedSessionOnFinishRef.current = snap.activeSessionId;
+        onSavedSessionDeleted?.(snap.activeSessionId);
+      }
       if (notifyParent && onSavedSessionsChange) onSavedSessionsChange();
       return;
     }
 
+    deletedSessionOnFinishRef.current = null;
     const sessionPayload: SavedStudySession = {
       id: snap.activeSessionId,
       mode: snap.mode,
