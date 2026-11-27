@@ -45,6 +45,106 @@ export interface CloudSyncSnapshot {
   listIds: string[];
   sessionIds: string[];
   syncedAt: number;
+  charHashes?: Record<string, string>;
+  charUpdatedAt?: Record<string, number>;
+  listHashes?: Record<string, string>;
+  statsHash?: string;
+  sessionHashes?: Record<string, string>;
+}
+
+function stableHashString(input: string): string {
+  let h1 = 0x811c9dc5;
+  let h2 = 0x9e3779b9;
+  for (let i = 0; i < input.length; i++) {
+    const ch = input.charCodeAt(i);
+    h1 ^= ch;
+    h1 = Math.imul(h1, 0x01000193);
+    h2 ^= ch + (i & 0xff);
+    h2 = Math.imul(h2, 0x85ebca6b);
+  }
+  return `${(h1 >>> 0).toString(36)}_${(h2 >>> 0).toString(36)}_${input.length}`;
+}
+
+export function computeCharacterSyncHash(char: Character): string {
+  const srs = char.srs || ({} as Character['srs']);
+  const normalized = {
+    hanzi: char.hanzi || '',
+    pinyin: char.pinyin || '',
+    hanViet: char.hanViet || '',
+    meaning: char.meaning || '',
+    radical: char.radical || '',
+    strokeCount: Number(char.strokeCount) || 0,
+    components: char.components || '',
+    mnemonic: char.mnemonic || '',
+    aiMnemonics: Array.isArray(char.aiMnemonics) ? char.aiMnemonics : [],
+    hskLevel: char.hskLevel ?? null,
+    customNotes: char.customNotes || '',
+    examples: Array.isArray(char.examples) ? char.examples : [],
+    compoundWords: Array.isArray(char.compoundWords) ? char.compoundWords : [],
+    listIds: Array.isArray(char.listIds) ? [...char.listIds].sort() : [],
+    srs: {
+      easinessFactor: Number(srs.easinessFactor) || 2.5,
+      interval: Number(srs.interval) || 0,
+      repetitions: Number(srs.repetitions) || 0,
+      nextReviewDate: Number(srs.nextReviewDate) || 0,
+      totalCorrect: Number(srs.totalCorrect) || 0,
+      totalIncorrect: Number(srs.totalIncorrect) || 0,
+      consecutiveCorrect: Number(srs.consecutiveCorrect) || 0,
+      lastReviewedAt: srs.lastReviewedAt ?? null,
+      masteryLevel: Number(srs.masteryLevel) || 0,
+      difficultyScore: Number(srs.difficultyScore) || 0,
+    },
+  };
+  return stableHashString(JSON.stringify(normalized));
+}
+
+export function computeWordListSyncHash(list: WordList): string {
+  const normalized = {
+    id: list.id || '',
+    name: list.name || '',
+    description: list.description || '',
+    icon: list.icon || '',
+    color: list.color || '',
+    isPredefined: Boolean(list.isPredefined),
+  };
+  return stableHashString(JSON.stringify(normalized));
+}
+
+export function computeStatsSyncHash(stats: UserStats): string {
+  const normalized = {
+    totalSaved: Number(stats.totalSaved) || 0,
+    totalMastered: Number(stats.totalMastered) || 0,
+    totalReviews: Number(stats.totalReviews) || 0,
+    accuracy: Number(stats.accuracy) || 0,
+    streakDays: Number(stats.streakDays) || 0,
+    lastStudyDate: stats.lastStudyDate || '',
+    totalStudyTimeSeconds: Number(stats.totalStudyTimeSeconds) || 0,
+  };
+  return stableHashString(JSON.stringify(normalized));
+}
+
+export function computeSessionSyncHash(session: SavedStudySession): string {
+  const normalized = {
+    id: session.id || '',
+    mode: session.mode,
+    selectedListId: session.selectedListId ?? null,
+    questionLimit: session.questionLimit ?? 'all',
+    questionsCount: Array.isArray(session.questions) ? session.questions.length : 0,
+    firstQuestionId: session.questions?.[0]?.id || '',
+    lastQuestionId: session.questions?.[session.questions.length - 1]?.id || '',
+    currentIndex: Number(session.currentIndex) || 0,
+    correctCount: Number(session.correctCount) || 0,
+    incorrectCount: Number(session.incorrectCount) || 0,
+    results: Array.isArray(session.sessionResults)
+      ? session.sessionResults.map((r) => ({
+          qid: r.question?.id || '',
+          ok: Boolean(r.isCorrect),
+          ans: r.userAnswer ?? '',
+          rate: r.ratingLabel ?? '',
+        }))
+      : [],
+  };
+  return stableHashString(JSON.stringify(normalized));
 }
 
 const INITIAL_CHAR_BY_ID = new Map(INITIAL_CHARACTERS.map((c) => [c.id, c]));
@@ -284,12 +384,126 @@ export function getCloudSyncSnapshot(uid: string): CloudSyncSnapshot | null {
 export function saveCloudSyncSnapshot(uid: string, snapshot: CloudSyncSnapshot): void {
   if (!uid) return;
   const map = readCloudSyncSnapshotMap();
+  const prev = map[uid];
   map[uid] = {
     hasSyncedOnce: Boolean(snapshot.hasSyncedOnce),
     charHanzi: Array.from(new Set(snapshot.charHanzi || [])),
     listIds: Array.from(new Set(snapshot.listIds || [])),
     sessionIds: Array.from(new Set(snapshot.sessionIds || [])),
     syncedAt: snapshot.syncedAt || Date.now(),
+    charHashes: snapshot.charHashes ?? prev?.charHashes ?? {},
+    charUpdatedAt: snapshot.charUpdatedAt ?? prev?.charUpdatedAt ?? {},
+    listHashes: snapshot.listHashes ?? prev?.listHashes ?? {},
+    statsHash: snapshot.statsHash ?? prev?.statsHash,
+    sessionHashes: snapshot.sessionHashes ?? prev?.sessionHashes ?? {},
+  };
+  writeCloudSyncSnapshotMap(map);
+}
+
+export function recordSyncedCharacters(uid: string, chars: Character[]): void {
+  if (!uid || chars.length === 0) return;
+  const map = readCloudSyncSnapshotMap();
+  const prev = map[uid];
+  const charHashes = { ...(prev?.charHashes || {}) };
+  const charUpdatedAt = { ...(prev?.charUpdatedAt || {}) };
+  const hanziSet = new Set(prev?.charHanzi || []);
+
+  chars.forEach((c) => {
+    const key = c.hanzi || c.id;
+    if (!key) return;
+    if (c.hanzi) hanziSet.add(c.hanzi);
+    charHashes[key] = computeCharacterSyncHash(c);
+    if (typeof c.updatedAt === 'number') {
+      charUpdatedAt[key] = c.updatedAt;
+    }
+  });
+
+  map[uid] = {
+    hasSyncedOnce: prev?.hasSyncedOnce ?? true,
+    charHanzi: Array.from(hanziSet),
+    listIds: prev?.listIds || [],
+    sessionIds: prev?.sessionIds || [],
+    syncedAt: Date.now(),
+    charHashes,
+    charUpdatedAt,
+    listHashes: prev?.listHashes || {},
+    statsHash: prev?.statsHash,
+    sessionHashes: prev?.sessionHashes || {},
+  };
+  writeCloudSyncSnapshotMap(map);
+}
+
+export function recordSyncedWordLists(uid: string, lists: WordList[]): void {
+  if (!uid || lists.length === 0) return;
+  const map = readCloudSyncSnapshotMap();
+  const prev = map[uid];
+  const listHashes = { ...(prev?.listHashes || {}) };
+  const listIdSet = new Set(prev?.listIds || []);
+
+  lists.forEach((l) => {
+    if (!l.id) return;
+    listIdSet.add(l.id);
+    listHashes[l.id] = computeWordListSyncHash(l);
+  });
+
+  map[uid] = {
+    hasSyncedOnce: prev?.hasSyncedOnce ?? true,
+    charHanzi: prev?.charHanzi || [],
+    listIds: Array.from(listIdSet),
+    sessionIds: prev?.sessionIds || [],
+    syncedAt: Date.now(),
+    charHashes: prev?.charHashes || {},
+    charUpdatedAt: prev?.charUpdatedAt || {},
+    listHashes,
+    statsHash: prev?.statsHash,
+    sessionHashes: prev?.sessionHashes || {},
+  };
+  writeCloudSyncSnapshotMap(map);
+}
+
+export function recordSyncedStats(uid: string, stats: UserStats): void {
+  if (!uid) return;
+  const map = readCloudSyncSnapshotMap();
+  const prev = map[uid];
+  map[uid] = {
+    hasSyncedOnce: prev?.hasSyncedOnce ?? true,
+    charHanzi: prev?.charHanzi || [],
+    listIds: prev?.listIds || [],
+    sessionIds: prev?.sessionIds || [],
+    syncedAt: Date.now(),
+    charHashes: prev?.charHashes || {},
+    charUpdatedAt: prev?.charUpdatedAt || {},
+    listHashes: prev?.listHashes || {},
+    statsHash: computeStatsSyncHash(stats),
+    sessionHashes: prev?.sessionHashes || {},
+  };
+  writeCloudSyncSnapshotMap(map);
+}
+
+export function recordSyncedSessions(uid: string, sessions: SavedStudySession[]): void {
+  if (!uid || sessions.length === 0) return;
+  const map = readCloudSyncSnapshotMap();
+  const prev = map[uid];
+  const sessionHashes = { ...(prev?.sessionHashes || {}) };
+  const sessionIdSet = new Set(prev?.sessionIds || []);
+
+  sessions.forEach((s) => {
+    if (!s.id) return;
+    sessionIdSet.add(s.id);
+    sessionHashes[s.id] = computeSessionSyncHash(s);
+  });
+
+  map[uid] = {
+    hasSyncedOnce: prev?.hasSyncedOnce ?? true,
+    charHanzi: prev?.charHanzi || [],
+    listIds: prev?.listIds || [],
+    sessionIds: Array.from(sessionIdSet),
+    syncedAt: Date.now(),
+    charHashes: prev?.charHashes || {},
+    charUpdatedAt: prev?.charUpdatedAt || {},
+    listHashes: prev?.listHashes || {},
+    statsHash: prev?.statsHash,
+    sessionHashes,
   };
   writeCloudSyncSnapshotMap(map);
 }
@@ -304,6 +518,11 @@ export function addHanziToCloudSyncSnapshot(uid: string, hanziList: string[]): v
     listIds: prev?.listIds || [],
     sessionIds: prev?.sessionIds || [],
     syncedAt: Date.now(),
+    charHashes: prev?.charHashes || {},
+    charUpdatedAt: prev?.charUpdatedAt || {},
+    listHashes: prev?.listHashes || {},
+    statsHash: prev?.statsHash,
+    sessionHashes: prev?.sessionHashes || {},
   };
   writeCloudSyncSnapshotMap(map);
 }
@@ -314,6 +533,12 @@ export function removeHanziFromCloudSyncSnapshot(uid: string, hanzi: string): vo
   const snap = map[uid];
   if (!snap) return;
   snap.charHanzi = (snap.charHanzi || []).filter((h) => h !== hanzi);
+  if (snap.charHashes) {
+    delete snap.charHashes[hanzi];
+  }
+  if (snap.charUpdatedAt) {
+    delete snap.charUpdatedAt[hanzi];
+  }
   map[uid] = snap;
   writeCloudSyncSnapshotMap(map);
 }
@@ -342,6 +567,11 @@ export function addSessionIdsToCloudSyncSnapshot(uid: string, sessionIds: string
     listIds: prev?.listIds || [],
     sessionIds: Array.from(new Set([...(prev?.sessionIds || []), ...sessionIds.filter(Boolean)])),
     syncedAt: Date.now(),
+    charHashes: prev?.charHashes || {},
+    charUpdatedAt: prev?.charUpdatedAt || {},
+    listHashes: prev?.listHashes || {},
+    statsHash: prev?.statsHash,
+    sessionHashes: prev?.sessionHashes || {},
   };
   writeCloudSyncSnapshotMap(map);
 }
@@ -352,6 +582,9 @@ export function removeSessionIdFromCloudSyncSnapshot(uid: string, sessionId: str
   const snap = map[uid];
   if (!snap) return;
   snap.sessionIds = (snap.sessionIds || []).filter((id) => id !== sessionId);
+  if (snap.sessionHashes) {
+    delete snap.sessionHashes[sessionId];
+  }
   map[uid] = snap;
   writeCloudSyncSnapshotMap(map);
 }
@@ -912,13 +1145,26 @@ export function upsertSavedStudySession(session: SavedStudySession): SavedStudyS
   return next;
 }
 
+export function wasSessionSyncedToCloud(uid: string, sessionId: string): boolean {
+  if (!uid || !sessionId) return false;
+  const snap = getCloudSyncSnapshot(uid);
+  if (!snap?.hasSyncedOnce) return true;
+  return Boolean(
+    snap.sessionIds?.includes(sessionId) ||
+    (snap.sessionHashes && sessionId in snap.sessionHashes)
+  );
+}
+
 export function removeSavedStudySession(sessionId: string): SavedStudySession[] {
   const next = getSavedStudySessions().filter((s) => s.id !== sessionId);
   persistSavedStudySessions(next);
   const ownerUid = getStorageOwnerUid();
   if (ownerUid && sessionId) {
+    const shouldQueueCloudDelete = wasSessionSyncedToCloud(ownerUid, sessionId);
     removePendingCloudSessionUpserts(ownerUid, [sessionId]);
-    addPendingCloudSessionDelete(ownerUid, sessionId);
+    if (shouldQueueCloudDelete) {
+      addPendingCloudSessionDelete(ownerUid, sessionId);
+    }
     removeSessionIdFromCloudSyncSnapshot(ownerUid, sessionId);
   }
   return next;

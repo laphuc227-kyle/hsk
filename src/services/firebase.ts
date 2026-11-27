@@ -1,4 +1,4 @@
-import { initializeApp, getApps, getApp } from 'firebase/app';
+import { initializeApp, getApps, getApp, onLog } from 'firebase/app';
 import {
   getAuth,
   GoogleAuthProvider,
@@ -58,6 +58,181 @@ const googleProvider = new GoogleAuthProvider();
 const FIRESTORE_READ_TIMEOUT_MS = 20000;
 const FIRESTORE_WRITE_TIMEOUT_MS = 18000;
 const FIRESTORE_FALLBACK_CONCURRENCY = 12;
+const FIRESTORE_QUOTA_STORAGE_KEY = 'hanzi_tutor_firestore_write_quota_v1';
+const FIRESTORE_QUOTA_COOLDOWN_MS = 10 * 60 * 1000;
+
+export interface FirestoreWriteStats {
+  totalWrites: number;
+  byCategory: Record<string, number>;
+  lastUpdatedAt: number | null;
+}
+
+const IS_DEV_MODE = (() => {
+  try {
+    return Boolean((import.meta as any)?.env?.DEV);
+  } catch {
+    return false;
+  }
+})();
+
+const sessionWriteStats: FirestoreWriteStats = {
+  totalWrites: 0,
+  byCategory: {},
+  lastUpdatedAt: null,
+};
+
+function recordFirestoreWrite(category: string, docCount: number = 1): void {
+  if (!IS_DEV_MODE || docCount <= 0) return;
+  sessionWriteStats.totalWrites += docCount;
+  sessionWriteStats.byCategory[category] = (sessionWriteStats.byCategory[category] || 0) + docCount;
+  sessionWriteStats.lastUpdatedAt = Date.now();
+  if (typeof window !== 'undefined') {
+    (window as any).__HANZI_FIRESTORE_WRITES__ = {
+      totalWrites: sessionWriteStats.totalWrites,
+      byCategory: { ...sessionWriteStats.byCategory },
+      lastUpdatedAt: sessionWriteStats.lastUpdatedAt,
+    };
+  }
+  console.info(
+    `[FirestoreWriteCounter][DEV] +${docCount} lượt ghi (${category}) | Tổng phiên: ${sessionWriteStats.totalWrites}`,
+    { ...sessionWriteStats.byCategory }
+  );
+}
+
+export function getFirestoreSessionWriteStats(): FirestoreWriteStats {
+  return {
+    totalWrites: sessionWriteStats.totalWrites,
+    byCategory: { ...sessionWriteStats.byCategory },
+    lastUpdatedAt: sessionWriteStats.lastUpdatedAt,
+  };
+}
+
+export function resetFirestoreSessionWriteStats(): void {
+  sessionWriteStats.totalWrites = 0;
+  sessionWriteStats.byCategory = {};
+  sessionWriteStats.lastUpdatedAt = null;
+  if (IS_DEV_MODE && typeof window !== 'undefined') {
+    (window as any).__HANZI_FIRESTORE_WRITES__ = {
+      totalWrites: 0,
+      byCategory: {},
+      lastUpdatedAt: null,
+    };
+  }
+}
+
+let writeQuotaPausedUntil = 0;
+let writeQuotaDayUtc = '';
+const activeWriteAbortListeners = new Set<(err: Error) => void>();
+
+function getCurrentUtcDay(): string {
+  return new Date().toISOString().split('T')[0];
+}
+
+function hydrateQuotaPauseFromStorage(): void {
+  if (typeof localStorage === 'undefined') return;
+  try {
+    const raw = localStorage.getItem(FIRESTORE_QUOTA_STORAGE_KEY);
+    if (!raw) return;
+    const parsed = JSON.parse(raw);
+    const today = getCurrentUtcDay();
+    if (
+      parsed &&
+      parsed.dayUtc === today &&
+      typeof parsed.pausedUntil === 'number' &&
+      parsed.pausedUntil > Date.now()
+    ) {
+      writeQuotaDayUtc = parsed.dayUtc;
+      writeQuotaPausedUntil = parsed.pausedUntil;
+    } else {
+      localStorage.removeItem(FIRESTORE_QUOTA_STORAGE_KEY);
+    }
+  } catch {}
+}
+
+hydrateQuotaPauseFromStorage();
+
+export function createQuotaExceededError(label?: string): Error & { code: string } {
+  const suffix = label ? ` [${label}]` : '';
+  const err: any = new Error(
+    `Firestore đã hết hạn mức ghi miễn phí trong ngày (resource-exhausted)${suffix}. Dữ liệu vẫn được lưu an toàn trên thiết bị và sẽ tự đồng bộ khi hạn mức được đặt lại vào ngày mai.`
+  );
+  err.code = 'resource-exhausted';
+  return err;
+}
+
+export function isFirestoreWriteQuotaPaused(): boolean {
+  const today = getCurrentUtcDay();
+  if (writeQuotaDayUtc && writeQuotaDayUtc !== today) {
+    writeQuotaPausedUntil = 0;
+    writeQuotaDayUtc = '';
+    try {
+      if (typeof localStorage !== 'undefined') {
+        localStorage.removeItem(FIRESTORE_QUOTA_STORAGE_KEY);
+      }
+    } catch {}
+    return false;
+  }
+  return writeQuotaPausedUntil > Date.now();
+}
+
+export function clearFirestoreWriteQuotaPause(): void {
+  writeQuotaPausedUntil = 0;
+  writeQuotaDayUtc = '';
+  try {
+    if (typeof localStorage !== 'undefined') {
+      localStorage.removeItem(FIRESTORE_QUOTA_STORAGE_KEY);
+    }
+  } catch {}
+}
+
+function markFirestoreWriteQuotaExceeded(reason?: string): void {
+  const today = getCurrentUtcDay();
+  writeQuotaDayUtc = today;
+  writeQuotaPausedUntil = Date.now() + FIRESTORE_QUOTA_COOLDOWN_MS;
+  try {
+    if (typeof localStorage !== 'undefined') {
+      localStorage.setItem(
+        FIRESTORE_QUOTA_STORAGE_KEY,
+        JSON.stringify({ dayUtc: today, pausedUntil: writeQuotaPausedUntil, reason: reason || '' })
+      );
+    }
+  } catch {}
+  const quotaErr = createQuotaExceededError();
+  activeWriteAbortListeners.forEach((abortFn) => {
+    try {
+      abortFn(quotaErr);
+    } catch {}
+  });
+}
+
+function isQuotaExceededErrorOrMessage(input: unknown): boolean {
+  const code = String((input as any)?.code || '').toLowerCase();
+  const msg = String(
+    input instanceof Error ? input.message : (input as any)?.message || input || ''
+  ).toLowerCase();
+  return (
+    code === 'resource-exhausted' ||
+    msg.includes('resource-exhausted') ||
+    msg.includes('quota limit exceeded') ||
+    msg.includes('free daily write units')
+  );
+}
+
+try {
+  onLog(
+    (params) => {
+      if (params.level === 'error' || params.level === 'warn') {
+        if (
+          isQuotaExceededErrorOrMessage(params.message) ||
+          params.args.some((arg) => isQuotaExceededErrorOrMessage(arg))
+        ) {
+          markFirestoreWriteQuotaExceeded(params.message);
+        }
+      }
+    },
+    { level: 'warn' }
+  );
+} catch {}
 
 export function withTimeout<T>(promise: Promise<T>, timeoutMs: number, label: string): Promise<T> {
   return new Promise<T>((resolve, reject) => {
@@ -75,6 +250,82 @@ export function withTimeout<T>(promise: Promise<T>, timeoutMs: number, label: st
       (err) => {
         clearTimeout(timer);
         reject(err);
+      }
+    );
+  });
+}
+
+function withWriteTimeout<T>(
+  opFactory: () => Promise<T>,
+  timeoutMs: number,
+  label: string
+): Promise<T> {
+  if (isFirestoreWriteQuotaPaused()) {
+    return Promise.reject(createQuotaExceededError(label));
+  }
+
+  return new Promise<T>((resolve, reject) => {
+    let settled = false;
+
+    const cleanup = () => {
+      clearTimeout(timer);
+      activeWriteAbortListeners.delete(abortOnQuota);
+    };
+
+    const abortOnQuota = () => {
+      if (settled) return;
+      settled = true;
+      cleanup();
+      reject(createQuotaExceededError(label));
+    };
+
+    const timer = setTimeout(() => {
+      if (settled) return;
+      settled = true;
+      cleanup();
+      const err: any = new Error(
+        `Thao tác đồng bộ "${label}" quá thời gian chờ (${Math.round(timeoutMs / 1000)}s).`
+      );
+      err.code = 'deadline-exceeded';
+      reject(err);
+    }, timeoutMs);
+
+    activeWriteAbortListeners.add(abortOnQuota);
+
+    let promise: Promise<T>;
+    try {
+      promise = opFactory();
+    } catch (syncErr) {
+      if (!settled) {
+        settled = true;
+        cleanup();
+        if (isQuotaExceededErrorOrMessage(syncErr)) {
+          markFirestoreWriteQuotaExceeded(syncErr instanceof Error ? syncErr.message : String(syncErr));
+          reject(createQuotaExceededError(label));
+        } else {
+          reject(syncErr);
+        }
+      }
+      return;
+    }
+
+    promise.then(
+      (val) => {
+        if (settled) return;
+        settled = true;
+        cleanup();
+        resolve(val);
+      },
+      (err) => {
+        if (settled) return;
+        settled = true;
+        cleanup();
+        if (isQuotaExceededErrorOrMessage(err)) {
+          markFirestoreWriteQuotaExceeded(err instanceof Error ? err.message : String(err));
+          reject(createQuotaExceededError(label));
+        } else {
+          reject(err);
+        }
       }
     );
   });
@@ -174,19 +425,28 @@ export async function signInWithGoogle(): Promise<User | null> {
     googleProvider.setCustomParameters({ prompt: 'select_account' });
     const result = await signInWithPopup(auth, googleProvider);
     if (result.user) {
-      // Save user profile info in Firestore
+      // Save user profile info in Firestore (non-blocking if quota exceeded)
       const userDocRef = doc(db, 'users', result.user.uid);
-      await setDoc(
-        userDocRef,
-        {
-          uid: result.user.uid,
-          email: result.user.email || '',
-          displayName: result.user.displayName || '',
-          photoURL: result.user.photoURL || '',
-          updatedAt: new Date().toISOString(),
+      await withWriteTimeout(
+        () => {
+          recordFirestoreWrite('users', 1);
+          return setDoc(
+            userDocRef,
+            {
+              uid: result.user.uid,
+              email: result.user.email || '',
+              displayName: result.user.displayName || '',
+              photoURL: result.user.photoURL || '',
+              updatedAt: new Date().toISOString(),
+            },
+            { merge: true }
+          );
         },
-        { merge: true }
-      );
+        8000,
+        'saveUserProfile'
+      ).catch((profileErr) => {
+        console.warn('[Auth] Could not update user profile doc:', profileErr);
+      });
     }
     return result.user;
   } catch (err: any) {
@@ -686,7 +946,14 @@ export async function saveCharacterToCloud(userId: string, character: Character)
   const path = `users/${userId}/characters/${cleanData.id}`;
   try {
     const docRef = doc(db, 'users', userId, 'characters', cleanData.id);
-    await withTimeout(setDoc(docRef, cleanData, { merge: true }), FIRESTORE_WRITE_TIMEOUT_MS, 'saveCharacter');
+    await withWriteTimeout(
+      () => {
+        recordFirestoreWrite('characters', 1);
+        return setDoc(docRef, cleanData, { merge: true });
+      },
+      FIRESTORE_WRITE_TIMEOUT_MS,
+      'saveCharacter'
+    );
   } catch (err) {
     handleFirestoreError(err, OperationType.WRITE, path);
   }
@@ -723,9 +990,17 @@ export async function deleteCharacterFromCloud(
 
     const chunkSize = 500;
     for (let i = 0; i < refs.length; i += chunkSize) {
-      const batch = writeBatch(db);
-      refs.slice(i, i + chunkSize).forEach((ref) => batch.delete(ref));
-      await withTimeout(batch.commit(), FIRESTORE_WRITE_TIMEOUT_MS, 'deleteCharacterBatch');
+      const chunkRefs = refs.slice(i, i + chunkSize);
+      await withWriteTimeout(
+        () => {
+          const batch = writeBatch(db);
+          chunkRefs.forEach((ref) => batch.delete(ref));
+          recordFirestoreWrite('characters:delete', chunkRefs.length);
+          return batch.commit();
+        },
+        FIRESTORE_WRITE_TIMEOUT_MS,
+        'deleteCharacterBatch'
+      );
     }
   } catch (err) {
     handleFirestoreError(err, OperationType.DELETE, path);
@@ -777,9 +1052,17 @@ export async function deleteCharactersBatchFromCloud(
     const refs = Array.from(refsToDelete.values());
     const chunkSize = 500;
     for (let i = 0; i < refs.length; i += chunkSize) {
-      const batch = writeBatch(db);
-      refs.slice(i, i + chunkSize).forEach((ref) => batch.delete(ref));
-      await withTimeout(batch.commit(), FIRESTORE_WRITE_TIMEOUT_MS, 'deleteCharsBatch');
+      const chunkRefs = refs.slice(i, i + chunkSize);
+      await withWriteTimeout(
+        () => {
+          const batch = writeBatch(db);
+          chunkRefs.forEach((ref) => batch.delete(ref));
+          recordFirestoreWrite('characters:deleteBatch', chunkRefs.length);
+          return batch.commit();
+        },
+        FIRESTORE_WRITE_TIMEOUT_MS,
+        'deleteCharsBatch'
+      );
     }
   } catch (err) {
     handleFirestoreError(err, OperationType.DELETE, path);
@@ -838,12 +1121,19 @@ export async function saveCharactersBatchToCloud(
   for (let i = 0; i < preparedDocs.length; i += chunkSize) {
     const chunk = preparedDocs.slice(i, i + chunkSize);
     try {
-      const batch = writeBatch(db);
-      chunk.forEach((item) => {
-        const docRef = doc(db, 'users', userId, 'characters', item.docId);
-        batch.set(docRef, item.payload, { merge: true });
-      });
-      await withTimeout(batch.commit(), FIRESTORE_WRITE_TIMEOUT_MS, 'saveCharactersBatch');
+      await withWriteTimeout(
+        () => {
+          const batch = writeBatch(db);
+          chunk.forEach((item) => {
+            const docRef = doc(db, 'users', userId, 'characters', item.docId);
+            batch.set(docRef, item.payload, { merge: true });
+          });
+          recordFirestoreWrite('characters:batch', chunk.length);
+          return batch.commit();
+        },
+        FIRESTORE_WRITE_TIMEOUT_MS,
+        'saveCharactersBatch'
+      );
       chunk.forEach((item) => {
         result.succeededIds.push(item.docId);
         result.succeededHanzi.push(item.hanzi);
@@ -873,7 +1163,14 @@ export async function saveCharactersBatchToCloud(
       await runWithConcurrency(chunk, FIRESTORE_FALLBACK_CONCURRENCY, async (item) => {
         try {
           const docRef = doc(db, 'users', userId, 'characters', item.docId);
-          await withTimeout(setDoc(docRef, item.payload, { merge: true }), FIRESTORE_WRITE_TIMEOUT_MS, `saveChar:${item.hanzi}`);
+          await withWriteTimeout(
+            () => {
+              recordFirestoreWrite('characters:fallbackDoc', 1);
+              return setDoc(docRef, item.payload, { merge: true });
+            },
+            FIRESTORE_WRITE_TIMEOUT_MS,
+            `saveChar:${item.hanzi}`
+          );
           result.succeededIds.push(item.docId);
           result.succeededHanzi.push(item.hanzi);
         } catch (docErr: any) {
@@ -971,12 +1268,19 @@ export async function saveWordListsToCloud(userId: string, wordLists: WordList[]
 
   const path = `users/${userId}/wordLists`;
   try {
-    const batch = writeBatch(db);
-    prepared.forEach((item) => {
-      const docRef = doc(db, 'users', userId, 'wordLists', item.id);
-      batch.set(docRef, item.payload, { merge: true });
-    });
-    await withTimeout(batch.commit(), FIRESTORE_WRITE_TIMEOUT_MS, 'saveWordListsBatch');
+    await withWriteTimeout(
+      () => {
+        const batch = writeBatch(db);
+        prepared.forEach((item) => {
+          const docRef = doc(db, 'users', userId, 'wordLists', item.id);
+          batch.set(docRef, item.payload, { merge: true });
+        });
+        recordFirestoreWrite('wordLists:batch', prepared.length);
+        return batch.commit();
+      },
+      FIRESTORE_WRITE_TIMEOUT_MS,
+      'saveWordListsBatch'
+    );
   } catch (batchErr) {
     if (isTransientFirestoreError(batchErr)) {
       handleFirestoreError(batchErr, OperationType.WRITE, path);
@@ -988,7 +1292,14 @@ export async function saveWordListsToCloud(userId: string, wordLists: WordList[]
     await runWithConcurrency(prepared, FIRESTORE_FALLBACK_CONCURRENCY, async (item) => {
       try {
         const docRef = doc(db, 'users', userId, 'wordLists', item.id);
-        await withTimeout(setDoc(docRef, item.payload, { merge: true }), FIRESTORE_WRITE_TIMEOUT_MS, `saveWordList:${item.id}`);
+        await withWriteTimeout(
+          () => {
+            recordFirestoreWrite('wordLists:fallbackDoc', 1);
+            return setDoc(docRef, item.payload, { merge: true });
+          },
+          FIRESTORE_WRITE_TIMEOUT_MS,
+          `saveWordList:${item.id}`
+        );
         succeeded++;
       } catch (docErr) {
         lastError = docErr;
@@ -1044,7 +1355,14 @@ export async function saveUserStatsToCloud(userId: string, stats: UserStats): Pr
 
   try {
     const docRef = doc(db, 'users', userId, 'stats', 'main');
-    await withTimeout(setDoc(docRef, cleanStats, { merge: true }), FIRESTORE_WRITE_TIMEOUT_MS, 'saveUserStats');
+    await withWriteTimeout(
+      () => {
+        recordFirestoreWrite('stats', 1);
+        return setDoc(docRef, cleanStats, { merge: true });
+      },
+      FIRESTORE_WRITE_TIMEOUT_MS,
+      'saveUserStats'
+    );
   } catch (err) {
     handleFirestoreError(err, OperationType.WRITE, path);
   }
@@ -1286,7 +1604,14 @@ export async function saveSavedSessionToCloud(
   const path = `users/${userId}/savedSessions/${session.id}`;
   try {
     const docRef = doc(db, 'users', userId, 'savedSessions', session.id);
-    await withTimeout(setDoc(docRef, payload, { merge: false }), FIRESTORE_WRITE_TIMEOUT_MS, `saveSession:${session.id}`);
+    await withWriteTimeout(
+      () => {
+        recordFirestoreWrite('savedSessions', 1);
+        return setDoc(docRef, payload, { merge: false });
+      },
+      FIRESTORE_WRITE_TIMEOUT_MS,
+      `saveSession:${session.id}`
+    );
   } catch (err) {
     handleFirestoreError(err, OperationType.WRITE, path);
   }
@@ -1299,7 +1624,14 @@ export async function deleteSavedSessionFromCloud(
   const path = `users/${userId}/savedSessions/${sessionId}`;
   try {
     const docRef = doc(db, 'users', userId, 'savedSessions', sessionId);
-    await withTimeout(deleteDoc(docRef), FIRESTORE_WRITE_TIMEOUT_MS, `deleteSession:${sessionId}`);
+    await withWriteTimeout(
+      () => {
+        recordFirestoreWrite('savedSessions:delete', 1);
+        return deleteDoc(docRef);
+      },
+      FIRESTORE_WRITE_TIMEOUT_MS,
+      `deleteSession:${sessionId}`
+    );
   } catch (err) {
     handleFirestoreError(err, OperationType.DELETE, path);
   }
@@ -1316,14 +1648,25 @@ async function deleteSubcollectionInBatches(
   let totalDeleted = 0;
 
   while (true) {
-    const snap = await getDocs(query(colRef, limit(MAX_WRITE_BATCH_OPS)));
+    const snap = await withTimeout(
+      getDocs(query(colRef, limit(MAX_WRITE_BATCH_OPS))),
+      FIRESTORE_READ_TIMEOUT_MS,
+      `listReset:${subcollectionName}`
+    );
     if (snap.empty) break;
 
-    const batch = writeBatch(db);
-    snap.docs.forEach((docSnap) => {
-      batch.delete(docSnap.ref);
-    });
-    await batch.commit();
+    await withWriteTimeout(
+      () => {
+        const batch = writeBatch(db);
+        snap.docs.forEach((docSnap) => {
+          batch.delete(docSnap.ref);
+        });
+        recordFirestoreWrite(`reset:${subcollectionName}`, snap.docs.length);
+        return batch.commit();
+      },
+      FIRESTORE_WRITE_TIMEOUT_MS,
+      `resetDelete:${subcollectionName}`
+    );
     totalDeleted += snap.docs.length;
 
     if (snap.docs.length < MAX_WRITE_BATCH_OPS) break;
@@ -1369,12 +1712,19 @@ export async function saveSavedSessionsBatchToCloud(
 
   const path = `users/${userId}/savedSessions`;
   try {
-    const batch = writeBatch(db);
-    prepared.forEach((item) => {
-      const docRef = doc(db, 'users', userId, 'savedSessions', item.id);
-      batch.set(docRef, item.payload, { merge: false });
-    });
-    await withTimeout(batch.commit(), FIRESTORE_WRITE_TIMEOUT_MS, 'saveSavedSessionsBatch');
+    await withWriteTimeout(
+      () => {
+        const batch = writeBatch(db);
+        prepared.forEach((item) => {
+          const docRef = doc(db, 'users', userId, 'savedSessions', item.id);
+          batch.set(docRef, item.payload, { merge: false });
+        });
+        recordFirestoreWrite('savedSessions:batch', prepared.length);
+        return batch.commit();
+      },
+      FIRESTORE_WRITE_TIMEOUT_MS,
+      'saveSavedSessionsBatch'
+    );
   } catch (batchErr) {
     if (isTransientFirestoreError(batchErr)) {
       handleFirestoreError(batchErr, OperationType.WRITE, path);
@@ -1386,7 +1736,14 @@ export async function saveSavedSessionsBatchToCloud(
     await runWithConcurrency(prepared, FIRESTORE_FALLBACK_CONCURRENCY, async (item) => {
       try {
         const docRef = doc(db, 'users', userId, 'savedSessions', item.id);
-        await withTimeout(setDoc(docRef, item.payload, { merge: false }), FIRESTORE_WRITE_TIMEOUT_MS, `saveSession:${item.id}`);
+        await withWriteTimeout(
+          () => {
+            recordFirestoreWrite('savedSessions:fallbackDoc', 1);
+            return setDoc(docRef, item.payload, { merge: false });
+          },
+          FIRESTORE_WRITE_TIMEOUT_MS,
+          `saveSession:${item.id}`
+        );
         succeeded++;
       } catch (docErr) {
         lastError = docErr;
@@ -1517,11 +1874,11 @@ export async function trackDailyAIUsage(
   count = 1
 ): Promise<void> {
   const uid = auth.currentUser?.uid;
-  if (!uid || count <= 0) return;
+  if (!uid || count <= 0 || isFirestoreWriteQuotaPaused()) return;
   const today = new Date().toISOString().split('T')[0];
   const docRef = doc(db, 'users', uid, 'usage', today);
   try {
-    const snap = await getDoc(docRef);
+    const snap = await withTimeout(getDoc(docRef), FIRESTORE_READ_TIMEOUT_MS, 'readDailyAIUsage');
     const prev = snap.exists() ? (snap.data() as DailyAIUsage) : null;
     const payload: DailyAIUsage = {
       userId: uid,
@@ -1531,7 +1888,14 @@ export async function trackDailyAIUsage(
       limit: prev?.limit || 150,
       updatedAt: Date.now(),
     };
-    await setDoc(docRef, sanitizeForFirestore(payload), { merge: true });
+    await withWriteTimeout(
+      () => {
+        recordFirestoreWrite('usage', 1);
+        return setDoc(docRef, sanitizeForFirestore(payload), { merge: true });
+      },
+      8000,
+      'trackDailyAIUsage'
+    );
   } catch (err) {
     console.warn('[Usage] trackDailyAIUsage failed:', err);
   }

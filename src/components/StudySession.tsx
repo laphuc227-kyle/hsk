@@ -335,6 +335,8 @@ export const StudySession: React.FC<StudySessionProps> = ({
     if (notifyParent && onSavedSessionsChange) onSavedSessionsChange();
   };
 
+  const exitedViaButtonRef = useRef<boolean>(false);
+
   useEffect(() => {
     persistProgressNow(true, false);
   }, [currentIndex, sessionResults.length, isCompleted, isAnswered, strokeRevealed]);
@@ -355,11 +357,14 @@ export const StudySession: React.FC<StudySessionProps> = ({
       window.removeEventListener('beforeunload', handleFlush);
       window.removeEventListener('pagehide', handleFlush);
       document.removeEventListener('visibilitychange', handleVisibilityChange);
-      persistProgressNow(false, true);
+      if (!exitedViaButtonRef.current) {
+        persistProgressNow(false, true);
+      }
     };
   }, []);
 
   const handleExitSession = () => {
+    exitedViaButtonRef.current = true;
     persistProgressNow(true, true);
     onFinishSession();
   };

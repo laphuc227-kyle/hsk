@@ -60,11 +60,21 @@ import {
   getDismissedCompounds,
   isUntouchedStarterCharacter,
   isPredefinedWordList,
+  computeCharacterSyncHash,
+  computeWordListSyncHash,
+  computeStatsSyncHash,
+  computeSessionSyncHash,
+  recordSyncedCharacters,
+  recordSyncedWordLists,
+  recordSyncedStats,
+  recordSyncedSessions,
+  wasSessionSyncedToCloud,
 } from './services/storage';
 import { autoCategorizeCharacters } from './services/hskClassifier';
 import { syncLearnedCompoundWords } from './services/compoundWordDetector';
 import {
   withTimeout,
+  isFirestoreWriteQuotaPaused,
   testFirestoreConnection,
   signInWithGoogle,
   signOutUser,
@@ -131,6 +141,8 @@ export default function App() {
   const [resumedStudySession, setResumedStudySession] = useState<SavedStudySession | null>(null);
   const [sessionInstanceKey, setSessionInstanceKey] = useState<number>(0);
 
+  const CLOUD_WRITE_DEBOUNCE_MS = 30000;
+
   const currentUserRef = useRef<User | null>(null);
   currentUserRef.current = currentUser;
   const activeViewRef = useRef(activeView);
@@ -139,13 +151,19 @@ export default function App() {
   const activeSyncPromiseRef = useRef<Promise<void> | null>(null);
   const resyncRequestRef = useRef<{ userId: string; silent: boolean } | null>(null);
   const pendingUploadPromiseRef = useRef<Promise<void> | null>(null);
+  const activeFlushPromiseRef = useRef<Promise<void> | null>(null);
   const sessionCloudQueueRef = useRef<Map<string, Promise<void>>>(new Map<string, Promise<void>>());
   const pendingReviewedCharsRef = useRef<Map<string, Character>>(new Map<string, Character>());
-  const reviewedCharsTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
-  const cloudSessionTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
+  const debouncedCloudFlushTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
   const pendingCloudSessionRef = useRef<SavedStudySession | null>(null);
-  const cloudStatsTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
   const toastTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
+
+  const clearDebouncedCloudFlushTimer = () => {
+    if (debouncedCloudFlushTimerRef.current) {
+      clearTimeout(debouncedCloudFlushTimerRef.current);
+      debouncedCloudFlushTimerRef.current = null;
+    }
+  };
 
   const showToast = (
     message: string,
@@ -189,7 +207,6 @@ export default function App() {
     try {
       await deleteCharactersBatchFromCloud(userId, pending);
       removePendingCloudDeletes(userId, pending);
-      saveUserStatsToCloud(userId, getUserStats()).catch(console.warn);
       return true;
     } catch (err) {
       console.warn('Could not flush pending cloud deletes yet:', err);
@@ -217,67 +234,277 @@ export default function App() {
     return allSucceeded;
   };
 
-  const flushPendingReviewedChars = async (userId: string): Promise<void> => {
-    if (reviewedCharsTimerRef.current) {
-      clearTimeout(reviewedCharsTimerRef.current);
-      reviewedCharsTimerRef.current = null;
+  const flushPendingCloudChanges = async (
+    userId: string,
+    reason: string = 'manual'
+  ): Promise<void> => {
+    clearDebouncedCloudFlushTimer();
+    if (
+      !userId ||
+      isFirestoreWriteQuotaPaused() ||
+      (typeof navigator !== 'undefined' && navigator.onLine === false)
+    ) {
+      return;
     }
-    if (pendingReviewedCharsRef.current.size === 0) return;
-    const chars: Character[] = [];
-    pendingReviewedCharsRef.current.forEach((char) => {
-      chars.push(char);
-    });
-    pendingReviewedCharsRef.current.clear();
-    try {
-      const res = await saveCharactersBatchToCloud(userId, chars);
-      if (res.succeededHanzi.length > 0) {
-        removePendingCloudUpserts(
-          userId,
-          res.succeededIds.map((id, idx) => ({ id, hanzi: res.succeededHanzi[idx] }))
-        );
-        addHanziToCloudSyncSnapshot(userId, res.succeededHanzi);
+
+    if (activeFlushPromiseRef.current) {
+      await activeFlushPromiseRef.current.catch(() => {});
+      // Fall through to check whether new changes arrived while the previous flush was running
+      if (isFirestoreWriteQuotaPaused()) return;
+    }
+
+    const flushTask = (async () => {
+      const reviewedSnapshot = new Map<string, Character>();
+      pendingReviewedCharsRef.current.forEach((char, key) => {
+        reviewedSnapshot.set(key, char);
+      });
+      pendingReviewedCharsRef.current.clear();
+
+      const queuedSession = pendingCloudSessionRef.current;
+      pendingCloudSessionRef.current = null;
+
+      const existingSnap = getCloudSyncSnapshot(userId);
+      const pendingDeletes = getPendingCloudDeletes(userId);
+      const pendingDeleteIds = new Set(pendingDeletes.map((p) => p.id).filter(Boolean));
+      const pendingDeleteHanzi = new Set(pendingDeletes.map((p) => p.hanzi).filter(Boolean));
+      const pendingSessionDeletes = getPendingCloudSessionDeletes(userId);
+      const pendingSessionDeleteIds = new Set(
+        pendingSessionDeletes.map((s) => s.id).filter(Boolean)
+      );
+
+      const localCharsRaw = getCharacters().filter(
+        (c) => !pendingDeleteIds.has(c.id) && !pendingDeleteHanzi.has(c.hanzi)
+      );
+      const localByKey = new Map<string, Character>();
+      localCharsRaw.forEach((c) => {
+        const key = c.hanzi || c.id;
+        if (key) localByKey.set(key, c);
+      });
+      reviewedSnapshot.forEach((char, key) => {
+        if (!pendingDeleteIds.has(char.id) && !pendingDeleteHanzi.has(char.hanzi)) {
+          localByKey.set(key, char);
+        }
+      });
+
+      const localLists = getWordLists();
+      const localStats = getUserStats();
+      const localSessionsRaw = getSavedStudySessions().filter(
+        (s) => !pendingSessionDeleteIds.has(s.id)
+      );
+      const sessionMap = new Map<string, SavedStudySession>();
+      localSessionsRaw.forEach((s) => sessionMap.set(s.id, s));
+      if (queuedSession && !pendingSessionDeleteIds.has(queuedSession.id)) {
+        sessionMap.set(queuedSession.id, queuedSession);
       }
-    } catch (err) {
-      console.warn('[CloudSync] Failed flushing reviewed chars batch:', err);
+      const localSessions = Array.from(sessionMap.values());
+
+      const charHashes = existingSnap?.charHashes || {};
+      const listHashes = existingSnap?.listHashes || {};
+      const sessionHashes = existingSnap?.sessionHashes || {};
+      const pendingUpserts = getPendingCloudUpserts(userId);
+      const pendingUpsertIds = new Set(pendingUpserts.map((p) => p.id).filter(Boolean));
+      const pendingUpsertHanzi = new Set(pendingUpserts.map((p) => p.hanzi).filter(Boolean));
+      const pendingSessionUpserts = getPendingCloudSessionUpserts(userId);
+      const pendingSessionUpsertIds = new Set(pendingSessionUpserts.map((s) => s.id));
+
+      let charsToUpload: Character[] = [];
+      let listsToUpload: WordList[] = [];
+      let shouldUploadStats = false;
+      let sessionsToUpload: SavedStudySession[] = [];
+
+      if (existingSnap?.hasSyncedOnce) {
+        localByKey.forEach((c, key) => {
+          const prevHash = charHashes[key];
+          const currentHash = computeCharacterSyncHash(c);
+          const isExplicitPending =
+            pendingUpsertIds.has(c.id) ||
+            pendingUpsertHanzi.has(c.hanzi) ||
+            reviewedSnapshot.has(key);
+
+          if (!prevHash) {
+            if (isExplicitPending || !isUntouchedStarterCharacter(c)) {
+              charsToUpload.push(c);
+            }
+          } else if (currentHash !== prevHash) {
+            charsToUpload.push(c);
+          }
+        });
+
+        listsToUpload = localLists.filter((l) => {
+          if (isPredefinedWordList(l)) return false;
+          const prevHash = listHashes[l.id];
+          return !prevHash || computeWordListSyncHash(l) !== prevHash;
+        });
+
+        shouldUploadStats =
+          !existingSnap.statsHash || computeStatsSyncHash(localStats) !== existingSnap.statsHash;
+
+        sessionsToUpload = localSessions.filter((s) => {
+          const prevHash = sessionHashes[s.id];
+          return !prevHash || computeSessionSyncHash(s) !== prevHash;
+        });
+      } else {
+        // First device sync has not completed yet: only flush explicitly queued user mutations
+        // so syncCloudData can perform the full initial Cloud merge first without uploading untouched starter words.
+        localByKey.forEach((c, key) => {
+          if (
+            pendingUpsertIds.has(c.id) ||
+            pendingUpsertHanzi.has(c.hanzi) ||
+            reviewedSnapshot.has(key)
+          ) {
+            charsToUpload.push(c);
+          }
+        });
+        sessionsToUpload = localSessions.filter(
+          (s) => pendingSessionUpsertIds.has(s.id) || queuedSession?.id === s.id
+        );
+        shouldUploadStats =
+          charsToUpload.length > 0 || sessionsToUpload.length > 0 || pendingDeletes.length > 0;
+      }
+
+      const inFlightSessionOps: Promise<void>[] = [];
+      sessionCloudQueueRef.current.forEach((p) => {
+        inFlightSessionOps.push(p.catch(() => {}));
+      });
+
+      const hasAnyWork =
+        charsToUpload.length > 0 ||
+        listsToUpload.length > 0 ||
+        shouldUploadStats ||
+        sessionsToUpload.length > 0 ||
+        pendingDeletes.length > 0 ||
+        pendingSessionDeletes.length > 0;
+
+      if (!hasAnyWork) {
+        if (inFlightSessionOps.length > 0) {
+          await Promise.all(inFlightSessionOps);
+        }
+        return;
+      }
+
+      try {
+        const [charRes, listsRes, statsRes, sessionsRes] = await Promise.allSettled([
+          charsToUpload.length > 0
+            ? saveCharactersBatchToCloud(userId, charsToUpload)
+            : Promise.resolve(null),
+          listsToUpload.length > 0 ? saveWordListsToCloud(userId, listsToUpload) : Promise.resolve(),
+          shouldUploadStats ? saveUserStatsToCloud(userId, localStats) : Promise.resolve(),
+          sessionsToUpload.length > 0
+            ? Promise.all(
+                sessionsToUpload.map((sess) =>
+                  enqueueSessionCloudOp(sess.id, async () => {
+                    const isDeleted = getPendingCloudSessionDeletes(userId).some(
+                      (d) => d.id === sess.id
+                    );
+                    if (isDeleted || isFirestoreWriteQuotaPaused()) return;
+                    await saveSavedSessionToCloud(userId, sess);
+                  })
+                )
+              )
+            : Promise.resolve(),
+          pendingDeletes.length > 0 ? flushPendingCloudDeletes(userId) : Promise.resolve(true),
+          pendingSessionDeletes.length > 0
+            ? flushPendingSessionDeletes(userId)
+            : Promise.resolve(true),
+          ...inFlightSessionOps,
+        ]);
+
+        if (charRes.status === 'fulfilled' && charRes.value) {
+          const summary = charRes.value;
+          if (summary.succeededHanzi.length > 0) {
+            const succeededHanziSet = new Set(summary.succeededHanzi);
+            const succeededIdSet = new Set(summary.succeededIds);
+            const succeededChars = charsToUpload.filter(
+              (c) => succeededIdSet.has(c.id) || succeededHanziSet.has(c.hanzi)
+            );
+            removePendingCloudUpserts(
+              userId,
+              summary.succeededIds.map((id, idx) => ({
+                id,
+                hanzi: summary.succeededHanzi[idx],
+              }))
+            );
+            recordSyncedCharacters(userId, succeededChars);
+          }
+          if (summary.failedDocs.length > 0) {
+            const failedHanziSet = new Set(summary.failedDocs.map((d) => d.hanzi));
+            const failedChars = charsToUpload.filter((c) => failedHanziSet.has(c.hanzi));
+            if (failedChars.length > 0) {
+              addPendingCloudUpserts(
+                userId,
+                failedChars.map((c) => ({ id: c.id, hanzi: c.hanzi }))
+              );
+            }
+          }
+        } else if (charRes.status === 'rejected') {
+          addPendingCloudUpserts(
+            userId,
+            charsToUpload.map((c) => ({ id: c.id, hanzi: c.hanzi }))
+          );
+          if ((charRes.reason as any)?.code === 'resource-exhausted' && reason !== 'tab_close') {
+            showToast(
+              'Đã lưu trên thiết bị. Firestore đã hết hạn mức ghi miễn phí trong ngày (resource-exhausted) nên sẽ tự đồng bộ lại vào ngày mai.',
+              'error',
+              5500
+            );
+          } else {
+            console.warn(`[CloudSync] Debounced character flush warning (${reason}):`, charRes.reason);
+          }
+        }
+
+        if (listsRes.status === 'fulfilled' && listsToUpload.length > 0) {
+          recordSyncedWordLists(userId, listsToUpload);
+        } else if (listsRes.status === 'rejected') {
+          console.warn(`[CloudSync] WordLists flush warning (${reason}):`, listsRes.reason);
+        }
+
+        if (statsRes.status === 'fulfilled' && shouldUploadStats) {
+          recordSyncedStats(userId, localStats);
+        } else if (statsRes.status === 'rejected') {
+          console.warn(`[CloudSync] Stats flush warning (${reason}):`, statsRes.reason);
+        }
+
+        if (sessionsRes.status === 'fulfilled' && sessionsToUpload.length > 0) {
+          removePendingCloudSessionUpserts(
+            userId,
+            sessionsToUpload.map((s) => s.id)
+          );
+          recordSyncedSessions(userId, sessionsToUpload);
+        } else if (sessionsRes.status === 'rejected') {
+          console.warn(`[CloudSync] Sessions flush warning (${reason}):`, sessionsRes.reason);
+        }
+      } catch (err) {
+        console.warn(`[CloudSync] Unexpected flush error (${reason}):`, err);
+      }
+    })();
+
+    activeFlushPromiseRef.current = flushTask;
+    pendingUploadPromiseRef.current = flushTask;
+    try {
+      await flushTask;
+    } finally {
+      if (activeFlushPromiseRef.current === flushTask) {
+        activeFlushPromiseRef.current = null;
+      }
+      if (pendingUploadPromiseRef.current === flushTask) {
+        pendingUploadPromiseRef.current = null;
+      }
     }
   };
 
-  const flushPendingStudyCloudWrites = async (userId: string): Promise<void> => {
-    if (cloudSessionTimerRef.current) {
-      clearTimeout(cloudSessionTimerRef.current);
-      cloudSessionTimerRef.current = null;
-    }
-    const pendingSession = pendingCloudSessionRef.current;
-    pendingCloudSessionRef.current = null;
-    if (pendingSession) {
-      await enqueueSessionCloudOp(pendingSession.id, async () => {
-        const isDeleted = getPendingCloudSessionDeletes(userId).some(
-          (d) => d.id === pendingSession.id
-        );
-        if (isDeleted) return;
-        try {
-          await saveSavedSessionToCloud(userId, pendingSession);
-          removePendingCloudSessionUpserts(userId, [pendingSession.id]);
-          addSessionIdsToCloudSyncSnapshot(userId, [pendingSession.id]);
-        } catch (err) {
-          console.warn('[CloudSync] Failed flushing pending session upsert:', err);
-        }
-      });
-    }
-    if (cloudStatsTimerRef.current) {
-      clearTimeout(cloudStatsTimerRef.current);
-      cloudStatsTimerRef.current = null;
-      saveUserStatsToCloud(userId, getUserStats()).catch(console.warn);
-    }
-    const inFlightSessionOps: Promise<void>[] = [];
-    sessionCloudQueueRef.current.forEach((p) => {
-      inFlightSessionOps.push(p.catch(() => {}));
-    });
-    await Promise.all([
-      flushPendingReviewedChars(userId),
-      flushPendingSessionDeletes(userId),
-      ...inFlightSessionOps,
-    ]);
+  const scheduleDebouncedCloudFlush = (
+    userId: string,
+    delayMs: number = CLOUD_WRITE_DEBOUNCE_MS
+  ) => {
+    if (!userId || isFirestoreWriteQuotaPaused()) return;
+    clearDebouncedCloudFlushTimer();
+    debouncedCloudFlushTimerRef.current = setTimeout(() => {
+      debouncedCloudFlushTimerRef.current = null;
+      const latestUid = currentUserRef.current?.uid;
+      if (latestUid === userId && !isFirestoreWriteQuotaPaused()) {
+        flushPendingCloudChanges(latestUid, 'debounce_30s');
+      }
+    }, delayMs);
   };
 
   // Initialize and load data on mount, plus subscribe to Firebase Auth
@@ -317,9 +544,7 @@ export default function App() {
         // If browser previously held a signed-in user's data, wipe it cleanly on sign-out
         const prevOwner = getStorageOwnerUid();
         if (prevOwner) {
-          if (cloudSessionTimerRef.current) clearTimeout(cloudSessionTimerRef.current);
-          if (cloudStatsTimerRef.current) clearTimeout(cloudStatsTimerRef.current);
-          if (reviewedCharsTimerRef.current) clearTimeout(reviewedCharsTimerRef.current);
+          clearDebouncedCloudFlushTimer();
           pendingCloudSessionRef.current = null;
           pendingReviewedCharsRef.current.clear();
           resetAllData();
@@ -335,43 +560,56 @@ export default function App() {
       }
     });
 
-    const handleVisibilityRefresh = () => {
+    const handleVisibilityChange = () => {
+      const uid = currentUserRef.current?.uid;
+      if (!uid) return;
+      if (document.visibilityState === 'hidden') {
+        flushPendingCloudChanges(uid, 'tab_close');
+        return;
+      }
       if (
         document.visibilityState === 'visible' &&
-        currentUserRef.current &&
         activeViewRef.current !== 'study' &&
-        Date.now() - lastAutoSyncAtRef.current > 30000
+        !isFirestoreWriteQuotaPaused() &&
+        Date.now() - lastAutoSyncAtRef.current > 60000
       ) {
-        syncCloudData(currentUserRef.current.uid, true);
+        syncCloudData(uid, true);
+      }
+    };
+
+    const handleTabUnloadFlush = () => {
+      const uid = currentUserRef.current?.uid;
+      if (uid) {
+        flushPendingCloudChanges(uid, 'tab_close');
       }
     };
 
     const handleOnlineSync = () => {
       const uid = currentUserRef.current?.uid;
-      if (!uid) return;
+      if (!uid || isFirestoreWriteQuotaPaused()) return;
       const hadPending = getPendingCloudDeletes(uid).length > 0;
-      Promise.all([flushPendingCloudDeletes(uid), flushPendingSessionDeletes(uid)]).then(
-        ([flushed]) => {
-          if (hadPending && flushed) {
-            showToast('Đã đồng bộ xóa từ vựng lên Cloud.', 'success', 3000);
-          }
-          if (activeViewRef.current !== 'study') {
-            syncCloudData(uid, true);
-          }
+      flushPendingCloudChanges(uid, 'online').then(() => {
+        if (hadPending && getPendingCloudDeletes(uid).length === 0) {
+          showToast('Đã đồng bộ xóa từ vựng lên Cloud.', 'success', 3000);
         }
-      );
+        if (activeViewRef.current !== 'study' && !isFirestoreWriteQuotaPaused()) {
+          syncCloudData(uid, true);
+        }
+      });
     };
 
-    document.addEventListener('visibilitychange', handleVisibilityRefresh);
+    document.addEventListener('visibilitychange', handleVisibilityChange);
+    window.addEventListener('pagehide', handleTabUnloadFlush);
+    window.addEventListener('beforeunload', handleTabUnloadFlush);
     window.addEventListener('online', handleOnlineSync);
 
     return () => {
       unsubscribe();
-      document.removeEventListener('visibilitychange', handleVisibilityRefresh);
+      document.removeEventListener('visibilitychange', handleVisibilityChange);
+      window.removeEventListener('pagehide', handleTabUnloadFlush);
+      window.removeEventListener('beforeunload', handleTabUnloadFlush);
       window.removeEventListener('online', handleOnlineSync);
-      if (cloudSessionTimerRef.current) clearTimeout(cloudSessionTimerRef.current);
-      if (cloudStatsTimerRef.current) clearTimeout(cloudStatsTimerRef.current);
-      if (reviewedCharsTimerRef.current) clearTimeout(reviewedCharsTimerRef.current);
+      clearDebouncedCloudFlushTimer();
       if (toastTimerRef.current) clearTimeout(toastTimerRef.current);
     };
   }, []);
@@ -396,15 +634,19 @@ export default function App() {
         (localTime > cloudTime || (preferLocalTie && localTime >= cloudTime)));
 
     const base = localIsAhead ? localChar : cloudChar;
-    const listUpdated = mergedListIds.length > (cloudChar.listIds?.length || 0);
+    const winner: Character = {
+      ...base,
+      id: cloudChar.id || localChar.id,
+      listIds: mergedListIds,
+    };
+
+    const cloudHash = computeCharacterSyncHash(cloudChar);
+    const winnerHash = computeCharacterSyncHash(winner);
+    const shouldUpload = winnerHash !== cloudHash;
 
     return {
-      winner: {
-        ...base,
-        id: cloudChar.id || localChar.id,
-        listIds: mergedListIds,
-      },
-      shouldUpload: localIsAhead || listUpdated || preferLocalTie,
+      winner,
+      shouldUpload,
     };
   };
 
@@ -417,22 +659,22 @@ export default function App() {
     }
 
     try {
-      // Wait (bounded) for any in-flight refreshAllData upload or study writes before reading Cloud
+      // Wait (bounded) for any in-flight flush before reading Cloud
       if (pendingUploadPromiseRef.current) {
         await withTimeout(pendingUploadPromiseRef.current, 20000, 'pendingUpload').catch((err) => {
           console.warn('[CloudSync] In-flight upload wait timed out/failed, continuing sync:', err);
         });
       }
 
-      await withTimeout(flushPendingStudyCloudWrites(userId), 15000, 'flushStudyWrites').catch(
-        (err) => console.warn('[CloudSync] Study flush timed out/failed, continuing sync:', err)
-      );
-
-      // Flush any offline/queued deletions before fetching Cloud state so deleted words/sessions never resurrect
-      await Promise.all([
-        flushPendingCloudDeletes(userId),
-        flushPendingSessionDeletes(userId),
-      ]);
+      if (!isFirestoreWriteQuotaPaused()) {
+        await withTimeout(
+          flushPendingCloudChanges(userId, 'pre_sync'),
+          18000,
+          'flushPendingChanges'
+        ).catch((err) =>
+          console.warn('[CloudSync] Pre-sync flush timed out/failed, continuing sync:', err)
+        );
+      }
 
       const remainingPending = getPendingCloudDeletes(userId);
       const pendingDeleteIds = new Set(remainingPending.map((p) => p.id).filter(Boolean));
@@ -550,12 +792,44 @@ export default function App() {
               console.warn('[CloudSync] Initial sessions upload warning:', sessionsRes.reason);
             }
 
+            const initialCharHashes: Record<string, string> = {};
+            const initialCharUpdatedAt: Record<string, number> = {};
+            const succeededHanziSet = new Set(uploadSummary.succeededHanzi);
+            localChars.forEach((c) => {
+              if (succeededHanziSet.has(c.hanzi)) {
+                const key = c.hanzi || c.id;
+                initialCharHashes[key] = computeCharacterSyncHash(c);
+                if (typeof c.updatedAt === 'number') {
+                  initialCharUpdatedAt[key] = c.updatedAt;
+                }
+              }
+            });
+
+            const initialListHashes: Record<string, string> = {};
+            if (listsRes.status === 'fulfilled') {
+              localLists.forEach((l) => {
+                initialListHashes[l.id] = computeWordListSyncHash(l);
+              });
+            }
+
+            const initialSessionHashes: Record<string, string> = {};
+            if (sessionsRes.status === 'fulfilled') {
+              mergedSessions.forEach((s) => {
+                initialSessionHashes[s.id] = computeSessionSyncHash(s);
+              });
+            }
+
             saveCloudSyncSnapshot(userId, {
               hasSyncedOnce: true,
               charHanzi: uploadSummary.succeededHanzi,
               listIds: listsRes.status === 'fulfilled' ? localLists.map((l) => l.id) : [],
               sessionIds: sessionsRes.status === 'fulfilled' ? mergedSessions.map((s) => s.id) : [],
               syncedAt: Date.now(),
+              charHashes: initialCharHashes,
+              charUpdatedAt: initialCharUpdatedAt,
+              listHashes: initialListHashes,
+              statsHash: statsRes.status === 'fulfilled' ? computeStatsSyncHash(localStats) : undefined,
+              sessionHashes: initialSessionHashes,
             });
 
             const failedCount = uploadSummary.failedDocs.length + uploadSummary.skippedInvalid.length;
@@ -593,7 +867,7 @@ export default function App() {
         });
 
         const mergedByHanzi = new Map<string, Character>(cloudByHanzi);
-        const toUploadChars: Character[] = [];
+        const toUploadCharsMap = new Map<string, Character>();
 
         localChars.forEach((lc) => {
           const isPendingLocalUpsert =
@@ -610,7 +884,7 @@ export default function App() {
               return;
             }
             mergedByHanzi.set(lc.hanzi, lc);
-            toUploadChars.push(lc);
+            toUploadCharsMap.set(lc.hanzi || lc.id, lc);
           } else {
             const { winner, shouldUpload } = pickFresherCharacter(
               existingCloud,
@@ -619,12 +893,24 @@ export default function App() {
             );
             mergedByHanzi.set(lc.hanzi, winner);
             if (shouldUpload) {
-              toUploadChars.push(winner);
+              toUploadCharsMap.set(winner.hanzi || winner.id, winner);
             }
           }
         });
 
         const mergedChars = autoCategorizeCharacters(Array.from(mergedByHanzi.values()));
+        mergedChars.forEach((mc) => {
+          const existingCloud = cloudByHanzi.get(mc.hanzi);
+          if (existingCloud) {
+            if (computeCharacterSyncHash(mc) !== computeCharacterSyncHash(existingCloud)) {
+              toUploadCharsMap.set(mc.hanzi || mc.id, mc);
+            }
+          } else if (toUploadCharsMap.has(mc.hanzi || mc.id)) {
+            toUploadCharsMap.set(mc.hanzi || mc.id, mc);
+          }
+        });
+        const toUploadChars = Array.from(toUploadCharsMap.values());
+
         saveCharacters(mergedChars);
         setCharacters(mergedChars);
         setSelectedCharacter((prev) => {
@@ -632,12 +918,17 @@ export default function App() {
           return mergedChars.find((c) => c.id === prev.id || c.hanzi === prev.hanzi) || null;
         });
 
-        // Merge Word Lists (preserve Cloud createdAt for existing lists)
+        // Merge Word Lists (preserve Cloud createdAt for existing lists, only upload new/changed custom lists)
         const listMap = new Map<string, WordList>();
-        cloudLists.forEach((l) => listMap.set(l.id, l));
+        const cloudListMap = new Map<string, WordList>();
+        cloudLists.forEach((l) => {
+          listMap.set(l.id, l);
+          cloudListMap.set(l.id, l);
+        });
         const toUploadLists: WordList[] = [];
         localLists.forEach((ll) => {
-          if (!listMap.has(ll.id)) {
+          const existingCloudList = cloudListMap.get(ll.id);
+          if (!existingCloudList) {
             if (syncedListIdSet.has(ll.id) && !isPredefinedWordList(ll)) {
               return;
             }
@@ -645,6 +936,14 @@ export default function App() {
             if (!isPredefinedWordList(ll) || cloudLists.length === 0) {
               toUploadLists.push(ll);
             }
+          } else if (
+            !isPredefinedWordList(ll) &&
+            computeWordListSyncHash(ll) !== computeWordListSyncHash(existingCloudList) &&
+            snapshot?.listHashes?.[ll.id] &&
+            computeWordListSyncHash(ll) !== snapshot.listHashes[ll.id]
+          ) {
+            listMap.set(ll.id, ll);
+            toUploadLists.push(ll);
           }
         });
         const mergedLists = Array.from(listMap.values());
@@ -684,13 +983,17 @@ export default function App() {
         const cloudSessions = rawCloudSessions.filter(
           (cs) => !pendingSessionDeleteIds.has(cs.id)
         );
+        const cloudSessionMap = new Map<string, SavedStudySession>();
         const sessionMap = new Map<string, SavedStudySession>();
-        cloudSessions.forEach((cs) => sessionMap.set(cs.id, cs));
+        cloudSessions.forEach((cs) => {
+          cloudSessionMap.set(cs.id, cs);
+          sessionMap.set(cs.id, cs);
+        });
 
         const sessionsToUpload: SavedStudySession[] = [];
         localSessions.forEach((ls) => {
           const isPendingLocalSession = pendingSessionUpsertIds.has(ls.id);
-          const existingCloud = sessionMap.get(ls.id);
+          const existingCloud = cloudSessionMap.get(ls.id);
           if (!existingCloud) {
             if (!isPendingLocalSession && syncedSessionIdSet.has(ls.id)) {
               return;
@@ -702,7 +1005,10 @@ export default function App() {
               (ls.updatedAt || 0) > (existingCloud.updatedAt || 0) ||
               ((ls.updatedAt || 0) === (existingCloud.updatedAt || 0) &&
                 (ls.currentIndex > existingCloud.currentIndex || isPendingLocalSession));
-            if (localNewer) {
+            if (
+              localNewer &&
+              computeSessionSyncHash(ls) !== computeSessionSyncHash(existingCloud)
+            ) {
               sessionMap.set(ls.id, ls);
               sessionsToUpload.push(ls);
             }
@@ -713,12 +1019,9 @@ export default function App() {
         setSavedSessions(mergedSessions);
 
         const shouldUploadStats =
-          !cloudStats ||
-          localReviews > cloudReviews ||
-          cloudStats.totalSaved !== mergedStats.totalSaved ||
-          cloudStats.totalMastered !== mergedStats.totalMastered;
+          !cloudStats || computeStatsSyncHash(mergedStats) !== computeStatsSyncHash(cloudStats);
 
-        // Push any genuine local-newer updates back up to Cloud (characters first & isolated from secondary failures)
+        // Push ONLY genuine local-newer updates back up to Cloud
         const [charRes, listsRes, statsRes, sessionsRes] = await Promise.allSettled([
           toUploadChars.length > 0
             ? saveCharactersBatchToCloud(userId, toUploadChars)
@@ -777,19 +1080,55 @@ export default function App() {
           console.warn('[CloudSync] Sessions upload warning:', sessionsRes.reason);
         }
 
-        // Only record characters confirmed on Cloud in cloudSyncSnapshot
-        const confirmedCloudHanzi = Array.from(
-          new Set([
-            ...Array.from(cloudByHanzi.keys()),
-            ...charSummary.succeededHanzi,
-          ])
-        );
-        const confirmedCloudSessionIds = Array.from(
-          new Set([
-            ...cloudSessions.map((s) => s.id),
-            ...(sessionsRes.status === 'fulfilled' ? sessionsToUpload.map((s) => s.id) : []),
-          ])
-        );
+        // Only record characters/lists/stats/sessions confirmed on Cloud in cloudSyncSnapshot
+        const succeededUploadHanziSet = new Set(charSummary.succeededHanzi);
+        const confirmedCharHashes: Record<string, string> = {};
+        const confirmedCharUpdatedAt: Record<string, number> = {};
+        const confirmedCloudHanzi: string[] = [];
+
+        mergedChars.forEach((mc) => {
+          const key = mc.hanzi || mc.id;
+          const wasUploaded = uploadedSet.has(mc.hanzi);
+          const confirmedOnCloud =
+            (cloudByHanzi.has(mc.hanzi) && !wasUploaded) ||
+            succeededUploadHanziSet.has(mc.hanzi);
+          if (confirmedOnCloud) {
+            confirmedCloudHanzi.push(mc.hanzi);
+            confirmedCharHashes[key] = computeCharacterSyncHash(mc);
+            if (typeof mc.updatedAt === 'number') {
+              confirmedCharUpdatedAt[key] = mc.updatedAt;
+            }
+          }
+        });
+
+        const confirmedListHashes: Record<string, string> = { ...(snapshot?.listHashes || {}) };
+        const uploadedListIds = new Set(toUploadLists.map((l) => l.id));
+        mergedLists.forEach((l) => {
+          if (
+            (cloudListMap.has(l.id) && !uploadedListIds.has(l.id)) ||
+            (uploadedListIds.has(l.id) && listsRes.status === 'fulfilled')
+          ) {
+            confirmedListHashes[l.id] = computeWordListSyncHash(l);
+          }
+        });
+
+        const confirmedSessionHashes: Record<string, string> = {};
+        const uploadedSessionIds = new Set(sessionsToUpload.map((s) => s.id));
+        const confirmedCloudSessionIds: string[] = [];
+        mergedSessions.forEach((s) => {
+          if (
+            (cloudSessionMap.has(s.id) && !uploadedSessionIds.has(s.id)) ||
+            (uploadedSessionIds.has(s.id) && sessionsRes.status === 'fulfilled')
+          ) {
+            confirmedCloudSessionIds.push(s.id);
+            confirmedSessionHashes[s.id] = computeSessionSyncHash(s);
+          }
+        });
+
+        const confirmedStatsHash =
+          !shouldUploadStats || statsRes.status === 'fulfilled'
+            ? computeStatsSyncHash(mergedStats)
+            : snapshot?.statsHash;
 
         saveCloudSyncSnapshot(userId, {
           hasSyncedOnce: true,
@@ -797,7 +1136,19 @@ export default function App() {
           listIds: mergedLists.map((l) => l.id),
           sessionIds: confirmedCloudSessionIds,
           syncedAt: Date.now(),
+          charHashes: confirmedCharHashes,
+          charUpdatedAt: confirmedCharUpdatedAt,
+          listHashes: confirmedListHashes,
+          statsHash: confirmedStatsHash,
+          sessionHashes: confirmedSessionHashes,
         });
+
+        const quotaRejected = [listsRes, statsRes, sessionsRes].find(
+          (r) => r.status === 'rejected' && (r.reason as any)?.code === 'resource-exhausted'
+        ) as PromiseRejectedResult | undefined;
+        if (quotaRejected) {
+          throw quotaRejected.reason;
+        }
 
         const failedCount = charSummary.failedDocs.length + charSummary.skippedInvalid.length;
         if (failedCount > 0) {
@@ -821,7 +1172,15 @@ export default function App() {
     } catch (err: any) {
       console.error('Cloud Sync failed:', err);
       const isOffline = typeof navigator !== 'undefined' && navigator.onLine === false;
-      if (!silent || !isOffline || err?.code === 'permission-denied') {
+      if (err?.code === 'resource-exhausted') {
+        if (!silent) {
+          showToast(
+            'Firestore đã hết hạn mức ghi miễn phí trong ngày (resource-exhausted). Dữ liệu mới đã được lưu trên thiết bị và sẽ tự đồng bộ lại vào ngày mai.',
+            'error',
+            6000
+          );
+        }
+      } else if (!silent || !isOffline || err?.code === 'permission-denied') {
         const code = err?.code ? ` (${err.code})` : '';
         showToast(
           `Đồng bộ đám mây thất bại${code}. Dữ liệu trên máy vẫn được giữ an toàn để thử lại!`,
@@ -939,43 +1298,16 @@ export default function App() {
       lastAutoSyncAtRef.current = 0;
 
       const uid = currentUserRef.current?.uid;
-      if (uid && (typeof navigator === 'undefined' || navigator.onLine !== false)) {
-        if (pendingUploadPromiseRef.current) {
-          await withTimeout(pendingUploadPromiseRef.current, 10000, 'signOutPendingUpload').catch(
-            () => {}
-          );
-        }
-        await withTimeout(flushPendingStudyCloudWrites(uid), 10000, 'signOutStudyFlush').catch(
+      if (
+        uid &&
+        !isFirestoreWriteQuotaPaused() &&
+        (typeof navigator === 'undefined' || navigator.onLine !== false)
+      ) {
+        await withTimeout(flushPendingCloudChanges(uid, 'sign_out'), 10000, 'signOutFlush').catch(
           () => {}
         );
-        const remainingUpserts = getPendingCloudUpserts(uid);
-        if (remainingUpserts.length > 0) {
-          const upsertIds = new Set(remainingUpserts.map((u) => u.id).filter(Boolean));
-          const upsertHanzi = new Set(remainingUpserts.map((u) => u.hanzi).filter(Boolean));
-          const toPush = getCharacters().filter(
-            (c) => upsertIds.has(c.id) || upsertHanzi.has(c.hanzi)
-          );
-          if (toPush.length > 0) {
-            await saveCharactersBatchToCloud(uid, toPush).catch(console.warn);
-          }
-        }
-        await Promise.all([
-          flushPendingCloudDeletes(uid),
-          flushPendingSessionDeletes(uid),
-        ]);
       } else {
-        if (cloudSessionTimerRef.current) {
-          clearTimeout(cloudSessionTimerRef.current);
-          cloudSessionTimerRef.current = null;
-        }
-        if (cloudStatsTimerRef.current) {
-          clearTimeout(cloudStatsTimerRef.current);
-          cloudStatsTimerRef.current = null;
-        }
-        if (reviewedCharsTimerRef.current) {
-          clearTimeout(reviewedCharsTimerRef.current);
-          reviewedCharsTimerRef.current = null;
-        }
+        clearDebouncedCloudFlushTimer();
         pendingCloudSessionRef.current = null;
         pendingReviewedCharsRef.current.clear();
       }
@@ -1005,10 +1337,7 @@ export default function App() {
     const loadedChars = getCharacters();
     // Auto-sync 100% learned review compound words into all vocabulary (skipping deleted compounds)
     const dismissed = new Set(getDismissedCompounds());
-    const { updatedCharacters, addedCount: autoCompoundAdded } = syncLearnedCompoundWords(
-      loadedChars,
-      dismissed
-    );
+    const { updatedCharacters } = syncLearnedCompoundWords(loadedChars, dismissed);
     let categorized = autoCategorizeCharacters(updatedCharacters);
     if (uid) {
       const pending = getPendingCloudDeletes(uid);
@@ -1025,133 +1354,9 @@ export default function App() {
     const latestSessions = getSavedStudySessions();
     setSavedSessions(latestSessions);
 
-    // If logged in, push pending/changed updates to Cloud and only confirm snapshot after Cloud succeeds
-    if (uid) {
-      // Absorb any queued reviewed characters so we push once cleanly
-      if (reviewedCharsTimerRef.current) {
-        clearTimeout(reviewedCharsTimerRef.current);
-        reviewedCharsTimerRef.current = null;
-      }
-      pendingReviewedCharsRef.current.clear();
-
-      const existingSnap = getCloudSyncSnapshot(uid);
-      const syncedHanziSet = new Set(existingSnap?.charHanzi || []);
-      const syncedListIdSet = new Set(existingSnap?.listIds || []);
-      const pendingUpserts = getPendingCloudUpserts(uid);
-      const pendingIdSet = new Set(pendingUpserts.map((p) => p.id).filter(Boolean));
-      const pendingHanziSet = new Set(pendingUpserts.map((p) => p.hanzi).filter(Boolean));
-
-      const charsToUpload = categorized.filter((c) => {
-        if (pendingIdSet.has(c.id) || pendingHanziSet.has(c.hanzi)) return true;
-        if (!existingSnap?.hasSyncedOnce) return !isUntouchedStarterCharacter(c);
-        if (autoCompoundAdded > 0 && !syncedHanziSet.has(c.hanzi)) return true;
-        if (!syncedHanziSet.has(c.hanzi) && !isUntouchedStarterCharacter(c)) return true;
-        return Boolean(c.updatedAt && c.updatedAt > existingSnap.syncedAt);
-      });
-
-      if (charsToUpload.length > 0) {
-        addPendingCloudUpserts(
-          uid,
-          charsToUpload.map((c) => ({ id: c.id, hanzi: c.hanzi }))
-        );
-      }
-
-      const listsToUpload = lists.filter(
-        (l) => !isPredefinedWordList(l) && (!existingSnap?.hasSyncedOnce || !syncedListIdSet.has(l.id))
-      );
-
-      const pendingSessionDeletes = getPendingCloudSessionDeletes(uid);
-      const pendingSessionUpserts = getPendingCloudSessionUpserts(uid);
-      const pendingSessionUpsertIdSet = new Set(pendingSessionUpserts.map((s) => s.id));
-      const sessionsToUpload = latestSessions.filter((s) => pendingSessionUpsertIdSet.has(s.id));
-
-      const uploadTask = (async () => {
-        try {
-          const [charRes, listsRes, statsRes, sessionsRes, sessionDeletesRes] =
-            await Promise.allSettled([
-              charsToUpload.length > 0
-                ? saveCharactersBatchToCloud(uid, charsToUpload)
-                : Promise.resolve({
-                    attempted: 0,
-                    succeededIds: [] as string[],
-                    succeededHanzi: [] as string[],
-                    failedDocs: [] as Array<{ id: string; hanzi: string; code: string; reason: string }>,
-                    skippedInvalid: [] as Array<{ id: string; hanzi: string }>,
-                  }),
-              listsToUpload.length > 0 ? saveWordListsToCloud(uid, listsToUpload) : Promise.resolve(),
-              saveUserStatsToCloud(uid, latestStats),
-              sessionsToUpload.length > 0
-                ? saveSavedSessionsBatchToCloud(uid, sessionsToUpload)
-                : Promise.resolve(),
-              pendingSessionDeletes.length > 0
-                ? flushPendingSessionDeletes(uid)
-                : Promise.resolve(true),
-            ]);
-
-          if (listsRes.status === 'rejected') {
-            console.warn('[CloudSync] WordLists background upload warning:', listsRes.reason);
-          }
-          if (statsRes.status === 'rejected') {
-            console.warn('[CloudSync] Stats background upload warning:', statsRes.reason);
-          }
-          if (sessionsRes.status === 'rejected') {
-            console.warn('[CloudSync] Sessions background upload warning:', sessionsRes.reason);
-          } else if (sessionsToUpload.length > 0) {
-            removePendingCloudSessionUpserts(
-              uid,
-              sessionsToUpload.map((s) => s.id)
-            );
-            addSessionIdsToCloudSyncSnapshot(
-              uid,
-              sessionsToUpload.map((s) => s.id)
-            );
-          }
-          if (sessionDeletesRes.status === 'rejected') {
-            console.warn('[CloudSync] Session delete flush warning:', sessionDeletesRes.reason);
-          }
-
-          if (charRes.status === 'rejected') {
-            throw charRes.reason;
-          }
-
-          const summary = charRes.value;
-          if (summary.succeededHanzi.length > 0) {
-            removePendingCloudUpserts(
-              uid,
-              summary.succeededIds.map((id, idx) => ({
-                id,
-                hanzi: summary.succeededHanzi[idx],
-              }))
-            );
-            addHanziToCloudSyncSnapshot(uid, summary.succeededHanzi);
-          }
-
-          const failedCount = summary.failedDocs.length + summary.skippedInvalid.length;
-          if (failedCount > 0) {
-            showToast(
-              `Đã lưu trên máy, nhưng ${failedCount} từ chưa đồng bộ được lên Cloud. Bấm Đồng bộ để thử lại.`,
-              'error',
-              5000
-            );
-          }
-        } catch (err: any) {
-          console.error('[CloudSync] Background upload failed:', err);
-          showToast(
-            'Đã lưu trên máy nhưng đồng bộ lên Cloud thất bại. Bấm Đồng bộ để thử lại!',
-            'error',
-            5000
-          );
-        }
-      })();
-
-      pendingUploadPromiseRef.current = uploadTask;
-      try {
-        await uploadTask;
-      } finally {
-        if (pendingUploadPromiseRef.current === uploadTask) {
-          pendingUploadPromiseRef.current = null;
-        }
-      }
+    // If logged in, debounce Cloud upload (min 30s) and diff against CloudSyncSnapshot hashes
+    if (uid && !isFirestoreWriteQuotaPaused()) {
+      scheduleDebouncedCloudFlush(uid, CLOUD_WRITE_DEBOUNCE_MS);
     }
   };
 
@@ -1188,7 +1393,7 @@ export default function App() {
     try {
       await deleteCharacterFromCloud(uid, targetId, targetHanzi || undefined);
       removePendingCloudDeletes(uid, [{ id: targetId, hanzi: targetHanzi }]);
-      saveUserStatsToCloud(uid, latestStats).catch(console.warn);
+      scheduleDebouncedCloudFlush(uid, CLOUD_WRITE_DEBOUNCE_MS);
     } catch (err) {
       console.warn('Cloud delete failed (queued for retry):', err);
       showToast(
@@ -1200,15 +1405,9 @@ export default function App() {
   };
 
   const handleResetAllData = async () => {
-    if (cloudSessionTimerRef.current) {
-      clearTimeout(cloudSessionTimerRef.current);
-      cloudSessionTimerRef.current = null;
-    }
-    if (cloudStatsTimerRef.current) {
-      clearTimeout(cloudStatsTimerRef.current);
-      cloudStatsTimerRef.current = null;
-    }
+    clearDebouncedCloudFlushTimer();
     pendingCloudSessionRef.current = null;
+    pendingReviewedCharsRef.current.clear();
 
     const uid = currentUserRef.current?.uid;
     if (uid) {
@@ -1222,6 +1421,11 @@ export default function App() {
         listIds: [],
         sessionIds: [],
         syncedAt: Date.now(),
+        charHashes: {},
+        charUpdatedAt: {},
+        listHashes: {},
+        statsHash: computeStatsSyncHash(getUserStats()),
+        sessionHashes: {},
       });
     } else {
       resetAllData();
@@ -1245,92 +1449,36 @@ export default function App() {
     );
   };
 
-  // Real-time / throttled-batch Cloud sync handlers during study sessions
+  // Real-time / 30s-debounced-batch Cloud sync handlers during study sessions
   const handleCharacterReviewedCloud = (updatedChar: Character) => {
     const uid = currentUserRef.current?.uid;
-    if (!uid) return;
+    if (!uid || isFirestoreWriteQuotaPaused()) return;
     pendingReviewedCharsRef.current.set(updatedChar.hanzi || updatedChar.id, updatedChar);
-
-    if (!reviewedCharsTimerRef.current) {
-      reviewedCharsTimerRef.current = setTimeout(() => {
-        reviewedCharsTimerRef.current = null;
-        const latestUid = currentUserRef.current?.uid;
-        if (latestUid) {
-          flushPendingReviewedChars(latestUid);
-        }
-      }, 2500);
-    }
-
-    if (!cloudStatsTimerRef.current) {
-      cloudStatsTimerRef.current = setTimeout(() => {
-        cloudStatsTimerRef.current = null;
-        const latestUid = currentUserRef.current?.uid;
-        if (latestUid) {
-          saveUserStatsToCloud(latestUid, getUserStats()).catch(console.warn);
-        }
-      }, 2500);
-    }
+    scheduleDebouncedCloudFlush(uid, CLOUD_WRITE_DEBOUNCE_MS);
   };
 
   const handleSavedSessionUpsertedCloud = (session: SavedStudySession, immediate: boolean = false) => {
     const uid = currentUserRef.current?.uid;
-    if (!uid) return;
+    if (!uid || isFirestoreWriteQuotaPaused()) return;
     pendingCloudSessionRef.current = session;
 
-    const dispatchSessionUpsert = (targetUid: string, targetSession: SavedStudySession) => {
-      enqueueSessionCloudOp(targetSession.id, async () => {
-        const isDeleted = getPendingCloudSessionDeletes(targetUid).some(
-          (d) => d.id === targetSession.id
-        );
-        if (isDeleted) return;
-        try {
-          await saveSavedSessionToCloud(targetUid, targetSession);
-          removePendingCloudSessionUpserts(targetUid, [targetSession.id]);
-          addSessionIdsToCloudSyncSnapshot(targetUid, [targetSession.id]);
-        } catch (err) {
-          console.warn(`[CloudSync] Failed saving session ${targetSession.id}:`, err);
-        }
-      });
-    };
-
     if (immediate) {
-      if (cloudSessionTimerRef.current) {
-        clearTimeout(cloudSessionTimerRef.current);
-        cloudSessionTimerRef.current = null;
-      }
-      const toSave = pendingCloudSessionRef.current;
-      pendingCloudSessionRef.current = null;
-      if (toSave) {
-        dispatchSessionUpsert(uid, toSave);
-      }
-      saveUserStatsToCloud(uid, getUserStats()).catch(console.warn);
+      flushPendingCloudChanges(uid, 'study_immediate');
       return;
     }
 
-    // Trailing throttle (max 1.2s delay) so continuous answering never starves Cloud progress updates
-    if (!cloudSessionTimerRef.current) {
-      cloudSessionTimerRef.current = setTimeout(() => {
-        cloudSessionTimerRef.current = null;
-        const latestUid = currentUserRef.current?.uid;
-        const toSave = pendingCloudSessionRef.current;
-        pendingCloudSessionRef.current = null;
-        if (latestUid && toSave) {
-          dispatchSessionUpsert(latestUid, toSave);
-        }
-      }, 1200);
-    }
+    scheduleDebouncedCloudFlush(uid, CLOUD_WRITE_DEBOUNCE_MS);
   };
 
   const handleSavedSessionDeletedCloud = (sessionId: string) => {
     if (pendingCloudSessionRef.current?.id === sessionId) {
       pendingCloudSessionRef.current = null;
     }
-    if (cloudSessionTimerRef.current) {
-      clearTimeout(cloudSessionTimerRef.current);
-      cloudSessionTimerRef.current = null;
-    }
     const uid = currentUserRef.current?.uid;
     if (!uid) return;
+    if (!wasSessionSyncedToCloud(uid, sessionId)) {
+      return;
+    }
     enqueueSessionCloudOp(sessionId, async () => {
       try {
         await deleteSavedSessionFromCloud(uid, sessionId);
